@@ -133,6 +133,7 @@ pub struct Game {
     pub h: f32,  // hauteur de saut
     pub vh: f32, // vitesse verticale
     pub moving: bool,
+    pub stride: f32, // distance parcourue au sol : anime les jambes
     pub jump_buf: f32, // saut demandé juste avant l'atterrissage : il part dès qu'on touche le sol
     pub dash_t: f32,  // temps de dash restant
     pub dash_cd: f32, // recharge restante
@@ -188,6 +189,7 @@ impl Game {
             h: 0.0,
             vh: 0.0,
             moving: false,
+            stride: 0.0,
             jump_buf: 0.0,
             dash_t: 0.0,
             dash_cd: 0.0,
@@ -474,7 +476,11 @@ impl Game {
         let dashing = self.dash_t > 0.0;
         self.moving = inp.fwd || dashing;
         if self.moving {
-            walk(&mut self.n, &mut self.f, if dashing { DASH_SPEED } else { WALK } * dt);
+            let speed = if dashing { DASH_SPEED } else { WALK };
+            walk(&mut self.n, &mut self.f, speed * dt);
+            if self.h == 0.0 {
+                self.stride += speed * dt;
+            }
         }
         turn(self.n, &mut self.f, inp.steer * TURN * dt);
 
@@ -644,6 +650,22 @@ mod tests {
             g.step(DT, Input::default());
         }
         assert!(g.h > 0.0, "le saut mémorisé doit partir à l'atterrissage");
+    }
+
+    #[test]
+    fn stride_counts_the_distance_walked_on_the_ground_only() {
+        let mut g = calm();
+        for _ in 0..60 {
+            g.step(DT, Input { fwd: true, ..Default::default() });
+        }
+        assert!((g.stride - WALK).abs() < 0.2, "foulée {}", g.stride); // 1 s à 6,5 u/s
+        let s = g.stride;
+        g.h = 2.0;
+        g.step(DT, Input { fwd: true, ..Default::default() });
+        assert_eq!(g.stride, s, "en l'air, les jambes ne comptent pas");
+        let mut still = calm();
+        still.step(DT, Input::default());
+        assert_eq!(still.stride, 0.0);
     }
 
     #[test]

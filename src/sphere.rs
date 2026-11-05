@@ -34,9 +34,33 @@ pub fn circle(dir: Vec3, rad: f32) -> Vec<Vec3> {
         .collect()
 }
 
+/// Vrai si le point `p` est caché derrière la planète vu de `eye` : le segment de l'œil au point traverse la
+/// sphère. Sert aux éléments 2D (points flottants) qui ne passent pas par le test de profondeur.
+pub fn hidden_by_planet(eye: Vec3, p: Vec3) -> bool {
+    let d = p - eye;
+    let (a, b, c) = (d.length_squared(), 2.0 * eye.dot(d), eye.length_squared() - R * R);
+    let disc = b * b - 4.0 * a * c;
+    if a == 0.0 || disc <= 0.0 {
+        return false;
+    }
+    let t = (-b - disc.sqrt()) / (2.0 * a); // première rencontre avec la sphère, de 0 (l'œil) à 1 (le point)
+    t > 0.0 && t < 1.0 - 1e-3
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn points_behind_the_planet_are_hidden() {
+        let eye = Vec3::Y * 19.0;
+        assert!(hidden_by_planet(eye, -Vec3::Y * (R + 2.0))); // à l'opposé
+        assert!(hidden_by_planet(eye, Vec3::X * R)); // au-delà de l'horizon
+        assert!(!hidden_by_planet(eye, Vec3::Y * (R + 2.0))); // sous l'œil
+        assert!(!hidden_by_planet(eye, vec3(7.2, 7.2, 0.0))); // en vue
+        assert!(!hidden_by_planet(eye, vec3(12.0, 0.0, 0.0))); // dépasse au-dessus de l'horizon
+        assert!(!hidden_by_planet(eye, Vec3::new(6.4, 6.4, 0.0))); // à la surface, côté visible
+    }
 
     #[test]
     fn walking_stays_on_the_sphere() {
