@@ -84,14 +84,21 @@ pub fn crystal(g: &Game, i: usize, k: &Crystal, sprites: &mut Vec<Sprite>) {
     if k.life < 3.0 && (g.t * 8.0) as i32 % 2 == 0 {
         return; // clignote avant de disparaître
     }
-    let (col, size, spin, orbs) = if k.gold { (AMBER, 1.25, 4.0, 4) } else { (CYAN, 1.0, 2.0, 2) };
+    let (col, size, spin, orbs) = if k.gold { (AMBER, 1.25, 4.0, 4) } else { (KINDS[k.kind], 1.0, 2.0, 2) };
     let c = k.dir;
     let q = Quat::from_axis_angle(c, g.t * spin + i as f32);
     let (u, w) = (q * c.any_orthonormal_vector(), q * c.cross(c.any_orthonormal_vector()));
     let base = c * (R + 1.7 + (g.t * 3.0 + i as f32 * 2.0).sin() * 0.15);
     let edge = mix(col, WHITE, 0.75);
     draw_line_3d(c * R, c * (R + 12.0), Color { a: 0.35, ..col }); // faisceau visible depuis l'autre côté de l'horizon
-    draw_box(base, [u, c, w], vec3(0.26, 0.8, 0.26) * size, col, edge);
+    // une forme par couleur, pour ne pas dépendre de la seule couleur : prisme, cube, cube posé sur la pointe
+    let tip = Quat::from_rotation_arc((u + c + w).normalize(), c); // la grande diagonale du cube à la verticale
+    let (half, ax) = match k.kind {
+        1 => (vec3(0.42, 0.42, 0.42), [u, c, w]),
+        2 => (vec3(0.4, 0.4, 0.4), [tip * u, tip * c, tip * w]),
+        _ => (vec3(0.26, 0.8, 0.26), [u, c, w]),
+    };
+    draw_box(base, ax, half * size, col, edge);
     // deux éclats plus petits, penchés vers l'extérieur
     let (q1, q2) = (Quat::from_axis_angle(w, 0.4), Quat::from_axis_angle(u, 0.45));
     draw_box(base + (u * 0.36 - c * 0.38) * size, [q1 * u, q1 * c, q1 * w], vec3(0.15, 0.45, 0.15) * size, shade(col, 0.9), edge);

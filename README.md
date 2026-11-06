@@ -1,6 +1,6 @@
 # Petite Planète
 
-Jeu d'arcade en 3D écrit en Rust avec [macroquad](https://macroquad.rs). Un astronaute court sur une mini-planète faite de dalles cubiques, ramasse des cristaux d'énergie et survit à des vagues de dangers de plus en plus variés : météorites, ondes de choc, drones chasseurs, salves en anneau.
+Jeu d'arcade en 3D écrit en Rust avec [macroquad](https://macroquad.rs). Un astronaute court sur une mini-planète faite de dalles cubiques, ramasse des cristaux d'énergie et survit à des vagues de dangers de plus en plus variés : météorites, ondes de choc, drones chasseurs, salves en anneau, puis cristaux à ramasser dans l'ordre des couleurs.
 
 Le style est néo-futuriste et cubique : planète dont les dalles s'allument au fil de la vague, lueur néon, interface à panneaux lumineux. Tout est généré par le code : aucun fichier image, son ou police à installer, et une seule dépendance (`macroquad`).
 
@@ -38,11 +38,12 @@ Le mode `--release` est recommandé : en mode debug, le jeu est nettement plus l
 | 2 | Ondes | Chaque impact lance une onde circulaire qu'il faut franchir en sautant. Des cristaux dorés apparaissent au centre des zones d'impact : appât risqué. |
 | 3 | Chasseurs | Des drones poursuivent le joueur (moins vite que lui). Retomber dessus après un saut les écrase. Une météorite les tue aussi. |
 | 4 | Salves | Toutes les 10 à 16 s, six impacts en anneau autour du joueur. Le centre est sûr, il reste une brèche pour sortir. |
-| 5 et plus | Chaos | Tout à la fois, et une part croissante des météorites vise l'endroit où le joueur sera dans 2 s. |
+| 5 | Ordre | Les cristaux ont trois couleurs (6 sur la planète, 2 de chaque) et se ramassent dans l'ordre : cyan, rose, vert, puis on recommence. Un cristal de la mauvaise couleur retire une case du quota et casse le combo, même pendant un dash. Le cristal doré est un joker. L'aura du joueur et le panneau ORDRE montrent la couleur attendue. |
+| 6 et plus | Chaos | Tout à la fois, et une part croissante des météorites vise l'endroit où le joueur sera dans 2 s. |
 
 Au fil des vagues, les météorites tombent plus souvent (intervalle `max(0,7 ; 2,2 − 0,2 × vague)` secondes) et il y a plus de drones (4 au maximum).
 
-**Score et combo.** Un cristal vaut 10 points, un cristal doré 50 (et compte pour 3 dans le quota), un drone écrasé 30, un drone tué par une météorite 20. Ramasser ou écraser dans les 3 s qui suivent le précédent fait monter le multiplicateur de ×1 à ×5 ; un coup le remet à zéro. Les cristaux disparaissent au bout de 11 s (7 s pour les dorés).
+**Score et combo.** Un cristal vaut 10 points, un cristal doré 50 (et compte pour 3 dans le quota), un drone écrasé 30, un drone tué par une météorite 20. Ramasser ou écraser dans les 3 s qui suivent le précédent fait monter le multiplicateur de ×1 à ×5 ; un coup ou un cristal de la mauvaise couleur le remet à zéro. Les cristaux disparaissent au bout de 11 s (7 s pour les dorés).
 
 **Vies et gestes.** On commence avec 3 vies. Un coup donne 1,5 s d'invulnérabilité. Le dash (0,2 s, rechargé en 1,4 s) rend invulnérable pendant qu'il dure. Un saut demandé juste avant l'atterrissage est mémorisé.
 

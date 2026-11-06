@@ -27,6 +27,9 @@ pub const HOTPINK: Color = Color::new(1.0, 0.2, 0.7, 1.0);
 pub const FIRE: Color = Color::new(1.0, 0.5, 0.1, 1.0);
 pub const AMBER: Color = Color::new(1.0, 0.82, 0.2, 1.0);
 pub const DRONE: Color = Color::new(1.0, 0.15, 0.35, 1.0);
+pub const ACID: Color = Color::new(0.5, 1.0, 0.2, 1.0); // pas LIME ni GREEN : ils existent déjà dans macroquad
+/// Couleurs des cristaux, dans l'ordre où il faut les ramasser à partir de la vague 5.
+pub const KINDS: [Color; 3] = [CYAN, HOTPINK, ACID];
 
 /// Réglages d'une vague : chacune ajoute un danger aux précédents.
 pub struct Cfg {
@@ -36,6 +39,8 @@ pub struct Cfg {
     pub drones: usize, // drones poursuivants
     pub salvos: bool, // salves de météorites en anneau
     pub lead: f32,    // part des météorites qui visent devant le joueur
+    pub kinds: usize, // couleurs de cristaux à ramasser dans l'ordre (1 : pas d'ordre)
+    pub crystals: usize, // cristaux ordinaires présents en même temps
 }
 
 pub fn cfg(w: u32) -> Cfg {
@@ -46,6 +51,8 @@ pub fn cfg(w: u32) -> Cfg {
         drones: if w >= 3 { ((w - 1) / 2).min(4) as usize } else { 0 },
         salvos: w >= 4,
         lead: (0.15 * (w as f32 - 1.0)).min(0.5),
+        kinds: if w >= 5 { 3 } else { 1 },
+        crystals: if w >= 5 { 6 } else { 3 },
     }
 }
 
@@ -87,7 +94,8 @@ pub struct Input {
 pub struct Crystal {
     pub dir: Vec3,
     pub life: f32,
-    pub gold: bool, // cristal doré : posé au centre d'une zone d'impact
+    pub gold: bool, // cristal doré : posé au centre d'une zone d'impact, joker pour l'ordre des couleurs
+    pub kind: usize, // couleur (indice dans KINDS)
 }
 
 pub struct Meteor {
@@ -151,6 +159,7 @@ pub struct Game {
     pub kills: u32,
     pub wave: u32,
     pub got: u32,       // progression du quota de la vague
+    pub need: usize,    // couleur du prochain cristal à ramasser (indice dans KINDS)
     pub rest: f32,      // pause sans danger restante
     pub banner: f32,    // temps restant d'affichage de la bannière de vague
     pub flawless: bool, // aucun coup reçu depuis le début de la vague
@@ -205,6 +214,7 @@ impl Game {
             kills: 0,
             wave: 0,
             got: 0,
+            need: 0,
             rest: 0.0,
             banner: 0.0,
             flawless: true,
@@ -242,6 +252,7 @@ impl Game {
     pub fn start_wave(&mut self, w: u32) {
         self.wave = w;
         self.got = 0;
+        self.need = 0;
         self.flawless = true;
         self.rest = if w == 1 { 1.5 } else { REST };
         self.banner = 4.0;
@@ -251,12 +262,16 @@ impl Game {
         self.fill_crystals();
     }
 
-    /// Garde toujours 3 cristaux ordinaires, jamais dans une zone d'impact ni sous le joueur.
+    /// Garde `cfg().crystals` cristaux ordinaires, jamais dans une zone d'impact ni sous le joueur. Chaque
+    /// nouveau prend la couleur la moins représentée : la couleur attendue est toujours là.
     fn fill_crystals(&mut self) {
-        while self.crystals.iter().filter(|c| !c.gold).count() < 3 {
+        let c = cfg(self.wave);
+        while self.crystals.iter().filter(|k| !k.gold).count() < c.crystals {
             let d = self.rng.dir();
             if (5.0..14.0).contains(&arc(d, self.n)) && !self.meteors.iter().any(|m| arc(m.dir, d) < BLAST) {
-                self.crystals.push(Crystal { dir: d, life: CRYSTAL_LIFE, gold: false });
+                let count = |i: usize| self.crystals.iter().filter(|k| !k.gold && k.kind == i).count();
+                let kind = (0..c.kinds).min_by_key(|&i| count(i)).unwrap_or(0);
+                self.crystals.push(Crystal { dir: d, life: CRYSTAL_LIFE, gold: false, kind });
             }
         }
     }
@@ -346,36 +361,61 @@ impl Game {
     }
 
     /// Pilote automatique (tests et captures d'écran) : fuit les impacts, saute les ondes et les
-    /// drones, dash en dernier recours, ramasse le cristal le plus proche qui ne sera pas détruit.
+    /// drones, dash en dernier recours, ramasse le cristal le plus proche de la bonne couleur qui ne sera
+    /// pas détruit, et contourne ceux de la mauvaise couleur.
     pub fn bot(&self) -> Input {
         let here = |d: Vec3| arc(d, self.n);
         let threat = self
             .meteors
             .iter()
-            .filter(|m| m.alt / FALL < 2.2 && here(m.dir) < BLAST + 1.0)
+            .filter(|m| m.alt / FALL < 2.2 && here(m.dir) < BLAST + 1.6) // assez loin pour sauter l'onde qui part de l'impact
             .min_by(|a, b| a.alt.total_cmp(&b.alt));
         let doomed = |c: &Crystal| {
             self.meteors
                 .iter()
                 .any(|m| arc(m.dir, c.dir) < BLAST && (!c.gold || here(c.dir) / WALK > m.alt / FALL - 0.3))
         };
+        let wanted = |c: &Crystal| c.gold || c.kind == self.need;
         let (goal, fleeing) = match threat {
             Some(m) => {
                 let away = (self.n - m.dir * self.n.dot(m.dir)).normalize_or_zero();
                 (Some((self.n + away * 0.5).normalize()), true)
             }
             None => {
-                let near = self.crystals.iter().filter(|c| !doomed(c)).min_by(|a, b| here(a.dir).total_cmp(&here(b.dir)));
+                let near = self.crystals.iter().filter(|c| wanted(c) && !doomed(c)).min_by(|a, b| here(a.dir).total_cmp(&here(b.dir)));
                 (near.map(|c| c.dir), false)
             }
         };
         let (steer, ahead) = goal.map_or((0.0, 0.0), |g| aim(self.n, self.f, g));
-        let wave_coming = self.shocks.iter().any(|s| s.harmful && (0.0..1.6).contains(&(here(s.dir) - s.r)));
+        // mauvais cristal dans le couloir devant lui (plus large que le ramassage) : il tourne du côté opposé, et
+        // n'avance que si ce virage le fait passer assez loin, sinon il tourne sur place. Fuir une météorite passe avant.
+        let blocking = |c: &Crystal| {
+            let to = (c.dir - self.n * c.dir.dot(self.n)) * R; // position dans le plan tangent
+            let (front, right) = (to.dot(self.f), to.dot(self.f.cross(self.n))); // right > 0 : à droite
+            ((0.0..4.0).contains(&front) && right.abs() < PICKUP + 0.3).then_some((front, right))
+        };
+        let in_way = if fleeing { None } else { self.crystals.iter().filter(|c| !wanted(c)).find_map(blocking) };
+        let r = WALK / TURN; // rayon du virage le plus serré
+        let clear = |(front, right): (f32, f32)| (right.abs() + r).powi(2) + front * front > (r + PICKUP + 0.1).powi(2);
+        // ondes pas encore entièrement passées (la zone qui blesse fait 0,6 de chaque côté de l'anneau) :
+        // (écart, part de sa course qui l'éloigne du centre)
+        let rings: Vec<(f32, f32)> = self
+            .shocks
+            .iter()
+            .filter(|s| s.harmful && here(s.dir) - s.r > -0.6)
+            .map(|s| (here(s.dir) - s.r, (self.n - s.dir * self.n.dot(s.dir)).normalize_or_zero().dot(self.f)))
+            .collect();
+        // il saute moins de 0,4 s avant l'arrivée de l'onde, pour que le saut couvre tout son passage. Une onde qui
+        // arrive dans son dos le rattrape à peine plus vite qu'il ne court : il s'arrête pour la laisser passer.
+        let pace = if self.moving { WALK } else { 0.0 };
+        let ring_jump = rings.iter().any(|&(gap, out)| gap > 0.0 && gap / (SHOCK_SPEED - pace * out) < 0.4);
+        let ring_behind = !fleeing && rings.iter().any(|&(gap, out)| out > 0.3 && gap < 2.0);
         let drone_close = self.drones.iter().any(|d| d.arm <= 0.0 && here(d.n) < 2.2);
         Input {
-            fwd: goal.is_some() && (fleeing || ahead > 0.3), // n'avance que face au but, sinon il tourne en orbite
-            steer,
-            jump: self.h == 0.0 && (wave_coming || drone_close),
+            // n'avance que face au but, sinon il tourne en orbite
+            fwd: !ring_behind && in_way.map_or(goal.is_some() && (fleeing || ahead > 0.3), clear),
+            steer: in_way.map_or(steer, |(_, right)| if right > 0.0 { 1.0 } else { -1.0 }),
+            jump: self.h == 0.0 && (ring_jump || drone_close),
             dash: threat.is_some_and(|m| m.alt / FALL < 0.8 && here(m.dir) < BLAST),
         }
     }
@@ -389,7 +429,7 @@ impl Game {
         let dir = (aim_at + self.rng.dir() * 0.7).normalize();
         self.meteors.push(Meteor { dir, alt: ALT0, spin: self.rng.range(0.0, TAU) });
         if self.wave >= 2 && self.rng.range(0.0, 1.0) < 0.25 {
-            self.crystals.push(Crystal { dir, life: GOLD_LIFE, gold: true }); // appât au centre de la zone
+            self.crystals.push(Crystal { dir, life: GOLD_LIFE, gold: true, kind: 0 }); // appât au centre de la zone
         }
     }
 
@@ -505,7 +545,7 @@ impl Game {
             }
         }
 
-        // cristaux : ils expirent, on les ramasse en chaîne
+        // cristaux : ils expirent, on les ramasse en chaîne, dans l'ordre des couleurs (le doré est un joker)
         for k in &mut self.crystals {
             k.life -= dt;
         }
@@ -514,7 +554,16 @@ impl Game {
         while i < self.crystals.len() {
             if arc(self.crystals[i].dir, self.n) < PICKUP && self.h < 1.8 {
                 let k = self.crystals.swap_remove(i);
-                let (base, worth, col) = if k.gold { (50, 3, AMBER) } else { (10, 1, CYAN) };
+                if !k.gold && k.kind != self.need {
+                    // mauvaise couleur : une case en moins et le combo cassé, même pendant un dash
+                    self.got = self.got.saturating_sub(1);
+                    (self.chain, self.chain_t) = (0, 0.0);
+                    self.burst(k.dir * (R + 1.0), GRAY, 18);
+                    self.pop(k.dir * (R + 2.0), "-1", DRONE);
+                    continue;
+                }
+                self.need = (self.need + 1) % c.kinds;
+                let (base, worth, col) = if k.gold { (50, 3, AMBER) } else { (10, 1, KINDS[k.kind]) };
                 let pts = base * self.chain_up();
                 self.score += pts;
                 self.got += worth;
@@ -614,8 +663,9 @@ mod tests {
         g
     }
 
+    /// Cristal sous le joueur, de la couleur attendue.
     fn crystal_here(g: &mut Game, gold: bool) {
-        g.crystals.push(Crystal { dir: g.n, life: 5.0, gold });
+        g.crystals.push(Crystal { dir: g.n, life: 5.0, gold, kind: g.need });
     }
 
     fn meteor_here(g: &mut Game) {
@@ -755,7 +805,7 @@ mod tests {
     fn blast_destroys_crystals_and_drones_in_its_radius() {
         let mut g = calm();
         let dir = Vec3::X; // à 14 unités du joueur : hors de portée du souffle
-        g.crystals.push(Crystal { dir, life: 5.0, gold: false });
+        g.crystals.push(Crystal { dir, life: 5.0, gold: false, kind: 0 });
         g.drones.push(Drone { n: dir, f: Vec3::Y, arm: 0.0 });
         g.meteors.push(Meteor { dir, alt: 0.01, spin: 0.0 });
         g.step(0.1, Input::default());
@@ -844,9 +894,57 @@ mod tests {
     #[test]
     fn waves_add_dangers_and_ask_for_more() {
         let (a, b) = (cfg(1), cfg(5));
-        assert!(!a.shocks && !a.salvos && a.drones == 0 && a.lead == 0.0);
-        assert!(b.shocks && b.salvos && b.drones >= 2 && b.lead > 0.4);
-        assert!(b.quota > a.quota && b.every < a.every);
+        assert!(!a.shocks && !a.salvos && a.drones == 0 && a.lead == 0.0 && a.kinds == 1);
+        assert!(b.shocks && b.salvos && b.drones >= 2 && b.lead > 0.4 && b.kinds == 3);
+        assert!(b.quota > a.quota && b.every < a.every && b.crystals > a.crystals);
+    }
+
+    /// Vague 5 sans danger, sans cristal.
+    fn calm_wave_5() -> Game {
+        let mut g = calm();
+        g.start_wave(5);
+        g.rest = 1e6;
+        g.crystals.clear();
+        g
+    }
+
+    #[test]
+    fn from_wave_5_crystals_follow_the_color_order() {
+        let mut g = calm_wave_5();
+        g.got = 2;
+        // mauvaise couleur : une case en moins, combo cassé, aucun point, la couleur attendue ne change pas
+        g.crystals.push(Crystal { dir: g.n, life: 5.0, gold: false, kind: 1 });
+        g.step(DT, Input::default());
+        assert_eq!((g.got, g.need, g.chain, g.score, g.lives), (1, 0, 0, 0, 3));
+        // bonne couleur : compte, puis on attend la suivante
+        crystal_here(&mut g, false);
+        g.step(DT, Input::default());
+        assert_eq!((g.got, g.need), (2, 1));
+        // doré : joker, vaut 3 et fait aussi avancer l'ordre
+        g.crystals.push(Crystal { dir: g.n, life: 5.0, gold: true, kind: 0 });
+        g.step(DT, Input::default());
+        assert_eq!((g.got, g.need), (5, 2));
+        // la planète garde 2 cristaux de chaque couleur
+        for kind in 0..3 {
+            assert_eq!(g.crystals.iter().filter(|c| !c.gold && c.kind == kind).count(), 2, "couleur {kind}");
+        }
+    }
+
+    #[test]
+    fn bot_walks_around_a_wrong_colored_crystal() {
+        let mut g = calm_wave_5();
+        g.got = 1;
+        let (mut d, mut f) = (g.n, g.f);
+        walk(&mut d, &mut f, 3.0);
+        g.crystals.push(Crystal { dir: d, life: 9.0, gold: false, kind: 1 }); // en plein sur le chemin
+        walk(&mut d, &mut f, 3.0);
+        g.crystals.push(Crystal { dir: d, life: 9.0, gold: false, kind: 0 }); // le bon, juste derrière
+        for _ in 0..180 {
+            let (prev, inp) = (g.got, g.bot());
+            g.step(DT, inp);
+            assert!(g.got >= prev, "le bot a ramassé un cristal de la mauvaise couleur");
+        }
+        assert!(g.got >= 2, "le bot n'a pas atteint le bon cristal");
     }
 
     // ---------- simulations d'équilibrage (sans fenêtre) ----------

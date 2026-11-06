@@ -92,7 +92,7 @@ async fn main() {
         g.shocks.push(Shock { dir: d, r: 3.0, harmful: true });
         g.meteors.push(Meteor { dir: d, alt: 12.0, spin: 0.0 });
         g.drones.push(Drone { n: d, f: d.any_orthonormal_vector(), arm: 0.0 });
-        g.crystals.push(Crystal { dir: d, life: 100.0, gold: true });
+        g.crystals.push(Crystal { dir: d, life: 100.0, gold: true, kind: 0 });
     }
     match state {
         State::Title => g.crystals.clear(), // écran titre : seulement la planète et l'astronaute

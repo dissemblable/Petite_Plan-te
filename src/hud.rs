@@ -14,6 +14,7 @@ pub fn wave_text(w: u32) -> (&'static str, &'static str) {
         2 => ("ONDES", "Les impacts lancent des ondes : saute par-dessus ! Le cristal doré est risqué."),
         3 => ("CHASSEURS", "Retombe sur un drone pour l'écraser, ou attire-le sous une météorite."),
         4 => ("SALVES", "Les salves t'encerclent : reste au centre ou fuis par une brèche."),
+        5 => ("ORDRE", "Cristaux dans l'ordre cyan, rose, vert : un mauvais coûte une case !"),
         _ => ("CHAOS", "Les météorites visent devant toi. Change de direction !"),
     }
 }
@@ -60,6 +61,25 @@ fn cube(x: f32, y: f32, s: f32, col: Color) {
     draw_rectangle_lines(x, y, s, s, 2.0, mix(col, WHITE, 0.5));
 }
 
+/// Icône d'un cristal de couleur `kind`, centrée en (x, y), de la même forme que lui : prisme, cube, losange.
+fn gem(kind: usize, x: f32, y: f32, s: f32) {
+    let (col, edge) = (KINDS[kind], mix(KINDS[kind], WHITE, 0.5));
+    match kind {
+        1 => cube(x - s / 2.0, y - s / 2.0, s, col),
+        2 => {
+            draw_poly(x, y, 4, s * 0.6, 0.0, shade(col, 0.5));
+            draw_poly(x, y, 4, s * 0.45, 0.0, col);
+            draw_poly_lines(x, y, 4, s * 0.6, 0.0, 2.0, edge);
+        }
+        _ => {
+            let (w, h) = (s * 0.45, s);
+            draw_rectangle(x - w / 2.0, y - h / 2.0, w, h, shade(col, 0.5));
+            draw_rectangle(x - w * 0.32, y - h * 0.42, w * 0.64, h * 0.84, col);
+            draw_rectangle_lines(x - w / 2.0, y - h / 2.0, w, h, 2.0, edge);
+        }
+    }
+}
+
 /// Barre en cases : `filled` cases allumées sur `total` ; la dernière allumée pulse.
 fn cells(r: Rect, filled: u32, total: u32, col: Color, t: f32) {
     let gap = 3.0;
@@ -79,7 +99,7 @@ fn cells(r: Rect, filled: u32, total: u32, col: Color, t: f32) {
 /// Interface de jeu : score, vies, dash, vague et quota, record, combo, bannière de vague.
 pub fn hud(g: &Game, best: u32) {
     let (w, t, now) = (screen_width(), theme(g.wave), g.t);
-    let quota = cfg(g.wave).quota;
+    let c = cfg(g.wave);
 
     // score, vies, recharge du dash
     panel(16.0, 14.0, 280.0, 126.0, CYAN);
@@ -103,7 +123,18 @@ pub fn hud(g: &Game, best: u32) {
     let px = (w - pw) / 2.0;
     panel(px, 14.0, pw, 66.0, t);
     glow_say(&format!("VAGUE {} : {name}", g.wave), 46.0, 28.0, t);
-    cells(Rect::new(px + 20.0, 58.0, pw - 40.0, 10.0), g.got.min(quota), quota, t, now);
+    cells(Rect::new(px + 20.0, 58.0, pw - 40.0, 10.0), g.got.min(c.quota), c.quota, t, now);
+
+    // ordre des couleurs (vague 5 et plus) : le cristal attendu en grand, puis les suivants
+    if c.kinds > 1 {
+        let x = w / 2.0 - 100.0;
+        panel(x, 88.0, 200.0, 50.0, KINDS[g.need]);
+        draw_text("ORDRE", x + 16.0, 120.0, 20.0, LABEL);
+        for i in 0..c.kinds {
+            let (cx, s) = if i == 0 { (x + 110.0, 30.0) } else { (x + 120.0 + 28.0 * i as f32, 18.0) };
+            gem((g.need + i) % c.kinds, cx, 113.0, s);
+        }
+    }
 
     // record et combo
     panel(w - 296.0, 14.0, 280.0, 54.0, AMBER);

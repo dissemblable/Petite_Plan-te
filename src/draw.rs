@@ -186,12 +186,13 @@ impl Scene {
             }
         }
         draw_mesh(&Mesh { vertices, indices, texture: None }); // traînée du joueur
-        disc(g.n, PICKUP, 0.075, Color { a: 0.06, ..CYAN }); // aura du joueur
+        let aura = KINDS[g.need]; // couleur du prochain cristal à prendre (cyan avant la vague 5)
+        disc(g.n, PICKUP, 0.075, Color { a: 0.06, ..aura }); // aura du joueur
         // lignes : aura (anneau pointillé et repères aux quatre coins), contours des zones, trajectoires
-        dashed_ring(g.n, PICKUP, 0.09, Color { a: 0.8, ..CYAN }, g.t * 6.0);
+        dashed_ring(g.n, PICKUP, 0.09, Color { a: 0.8, ..aura }, g.t * 6.0);
         let (near, far) = (circle(g.n, PICKUP * 0.8), circle(g.n, PICKUP * 1.3));
         for i in [0, 8, 16, 24] {
-            draw_line_3d(near[i] * (R + 0.09), far[i] * (R + 0.09), CYAN);
+            draw_line_3d(near[i] * (R + 0.09), far[i] * (R + 0.09), aura);
         }
         for m in &g.meteors {
             let col = zone(m);

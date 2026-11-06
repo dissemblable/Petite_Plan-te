@@ -21,7 +21,7 @@ Jeu d'arcade 3D en Rust (macroquad 0.4, édition 2024, une seule dépendance). U
 - Le hasard de partie vient de `Game.rng` (xorshift, déterministe). `macroquad::rand` est réservé aux effets purement visuels (tremblement de caméra).
 - Les réglages de difficulté sont en tête de `game.rs` (constantes et `cfg(vague)`). Ne pas les disperser ailleurs.
 - Nouvelle mécanique de jeu : l'ajouter dans `game.rs` avec un test de règle sans fenêtre, mettre à jour `Game::bot` si elle demande une réaction (il sert aux tests, aux simulations d'équilibrage et à l'outil de capture), puis l'afficher dans `models.rs` ou `draw.rs`, et l'expliquer dans la bannière de vague (`hud::wave_text`) si elle est liée à une vague.
-- Palette : `HOTPINK` et non `PINK`, qui existe déjà dans macroquad (conflit d'import avec les `use ...::*`).
+- Palette : `HOTPINK` et non `PINK`, `ACID` et non `LIME` ou `GREEN`, qui existent déjà dans macroquad (conflit d'import avec les `use ...::*`).
 - Les touches sont lues par position physique (scancode) : `KeyCode::W`/`A`/`D` sont Z/Q/D sur AZERTY. Ne pas ajouter d'alias Z/Q, ils se doubleraient.
 - Pas de ressource externe (image, son, police) sans demande : tout est généré par le code.
 
