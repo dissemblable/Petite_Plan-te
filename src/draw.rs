@@ -168,9 +168,17 @@ impl Scene {
         // Marquages au sol. Les décalques translucides écrivent la profondeur (miniquad n'active le test de
         // profondeur que dans ce cas ; sans lui on les verrait à travers la planète) : on les dessine donc du
         // plus bas au plus haut, au-dessus des dalles (cœurs à 0,05).
-        let zone = |m: &Meteor| if arc(m.dir, g.n) < BLAST { Color::new(1.0, 0.15, 0.1, 1.0) } else { FIRE };
+        // Zone dangereuse à l'impact : le souffle, plus (dès la vague 2) le liseré où l'onde blesse dès sa naissance.
+        // Elle passe au rouge quand le joueur est dedans.
+        let reach = if cfg(g.wave).shocks { BLAST + SHOCK_BAND } else { BLAST };
+        let zone = |m: &Meteor| if arc(m.dir, g.n) < reach { Color::new(1.0, 0.15, 0.1, 1.0) } else { FIRE };
         for m in &g.meteors {
-            self.additive(|| disc(m.dir, BLAST, 0.065, Color { a: 0.3, ..zone(m) })); // zone d'impact
+            self.additive(|| {
+                disc(m.dir, BLAST, 0.065, Color { a: 0.3, ..zone(m) }); // zone d'impact
+                if reach > BLAST {
+                    band(m.dir, BLAST, reach, 1, 0.065, Color { a: 0.14, ..zone(m) }); // liseré de l'onde
+                }
+            });
         }
         let pts: Vec<Vec3> = g.trail.iter().copied().chain([g.n]).collect();
         let (mut vertices, mut indices) = (vec![], vec![]);
@@ -196,6 +204,9 @@ impl Scene {
         }
         for m in &g.meteors {
             let col = zone(m);
+            if reach > BLAST {
+                ring(m.dir, reach, 0.09, Color { a: 0.3, ..col }); // bord du liseré
+            }
             ring(m.dir, BLAST, 0.09, Color { a: 0.6, ..col });
             dashed_ring(m.dir, BLAST, 0.095, col, -g.t * 5.0);
             ring(m.dir, BLAST * (1.0 - (m.alt / ALT0).min(1.0)), 0.09, col); // se remplit jusqu'à l'impact
@@ -206,10 +217,10 @@ impl Scene {
             let a = (1.0 - s.r / max).clamp(0.25, 1.0);
             if s.harmful {
                 // additif : la bande ajoute de la lumière quelle que soit la couleur des dalles dessous.
-                // Halo large (avertissement), zone qui blesse (1,2 de large), cœur blanc chaud.
+                // Halo large (avertissement), zone qui blesse (2 × SHOCK_BAND de large), cœur blanc chaud.
                 self.additive(|| {
                     band(s.dir, (s.r - 1.0).max(0.0), s.r + 1.0, 2, 0.10, Color::new(1.0, 0.35, 0.05, 0.4 * a));
-                    band(s.dir, (s.r - 0.6).max(0.0), s.r + 0.6, 2, 0.105, Color::new(1.0, 0.65, 0.2, 0.85 * a));
+                    band(s.dir, (s.r - SHOCK_BAND).max(0.0), s.r + SHOCK_BAND, 2, 0.105, Color::new(1.0, 0.65, 0.2, 0.85 * a));
                     band(s.dir, (s.r - 0.2).max(0.0), s.r + 0.2, 1, 0.11, Color::new(1.0, 0.95, 0.75, a));
                 });
             } else {
@@ -284,7 +295,7 @@ impl Game {
         self.cam_up = self.cam_up.lerp(self.n, k).normalize();
         self.shake = (self.shake - 2.0 * dt).max(0.0);
         let jitter = vec3(rand::gen_range(-1.0, 1.0), rand::gen_range(-1.0, 1.0), rand::gen_range(-1.0, 1.0));
-        let (position, target) = (self.cam + jitter * self.shake * 0.4, self.pos() + self.f * 2.0);
+        let (position, target) = (self.cam + jitter * self.shake * 0.4, self.pos() + self.f * 0.5);
         let right = (target - position).normalize().cross(self.cam_up).normalize();
         Camera3D {
             position,

@@ -1,7 +1,7 @@
 //! Simulation du jeu : aucune dépendance au dessin, donc testable sans fenêtre.
 use crate::sphere::*;
 use macroquad::prelude::*;
-use std::f32::consts::TAU;
+use std::f32::consts::{PI, TAU};
 
 // ---------- réglages : tout ce qui change la difficulté est ici ----------
 
@@ -10,6 +10,7 @@ pub const ALT0: f32 = 26.0; // altitude de départ des météorites
 pub const FALL: f32 = 12.0; // vitesse de chute des météorites
 pub const PICKUP: f32 = 1.6; // rayon de ramassage d'un cristal
 pub const SHOCK_MAX: f32 = 10.0; // rayon maximal d'une onde d'impact
+pub const SHOCK_BAND: f32 = 0.6; // demi-largeur de l'anneau qui blesse : à l'impact, l'onde blesse jusqu'à BLAST + SHOCK_BAND
 pub const DASH_TIME: f32 = 0.2; // durée du dash
 pub const DASH_CD: f32 = 1.4; // recharge du dash
 pub const CHAIN_TIME: f32 = 3.0; // temps pour enchaîner un ramassage sans casser le combo
@@ -17,9 +18,15 @@ pub const MAX_LIVES: u32 = 5;
 const WALK: f32 = 6.5; // vitesse de marche (unités/s)
 const DASH_SPEED: f32 = 24.0;
 const TURN: f32 = 2.6; // vitesse de rotation (rad/s)
+const FLIP_SPEED: f32 = 12.0; // vitesse du demi-tour (rad/s) : 180° en 0,26 s
+const GROUND: f32 = 0.5; // sous cette hauteur, on est au sol : les ondes touchent et on ramasse les cristaux
 const CRYSTAL_LIFE: f32 = 11.0; // durée de vie d'un cristal (s)
-const GOLD_LIFE: f32 = 7.0;
-const SHOCK_SPEED: f32 = 7.0;
+const GOLD_LIFE: f32 = 7.0; // ne compte qu'après une fin de vague : sinon, l'impact de sa météorite le détruit avant
+// Un saut protège 0,59 s. L'onde doit traverser le joueur (2 × SHOCK_BAND) plus vite que ça, même s'il la fuit :
+// il faut au moins 2 u/s de plus que la marche. À 10 u/s, elle le traverse toujours en 0,35 s au plus.
+const SHOCK_SPEED: f32 = 10.0;
+const SALVO_RADIUS: f32 = 7.0; // rayon de l'anneau d'une salve, autour du joueur
+const FIRST_REST: f32 = 2.5; // pause avant la vague 1 : le temps de lire la bannière
 const REST: f32 = 3.5; // pause entre deux vagues (s)
 
 pub const CYAN: Color = Color::new(0.15, 0.95, 1.0, 1.0);
@@ -48,12 +55,21 @@ pub fn cfg(w: u32) -> Cfg {
         quota: 6 + 2 * w,
         every: (2.2 - 0.2 * w as f32).max(0.7),
         shocks: w >= 2,
-        drones: if w >= 3 { ((w - 1) / 2).min(4) as usize } else { 0 },
+        drones: match w {
+            0..=2 => 0,
+            3..=5 => 1, // la vague 5 introduit l'ordre des couleurs : rien d'autre ne durcit
+            _ => ((w - 1) / 2).min(4) as usize,
+        },
         salvos: w >= 4,
         lead: (0.15 * (w as f32 - 1.0)).min(0.5),
         kinds: if w >= 5 { 3 } else { 1 },
         crystals: if w >= 5 { 6 } else { 3 },
     }
+}
+
+/// Pause sans danger au début de la vague `w`. La bannière de la vague s'affiche pendant ce temps.
+pub fn rest_time(w: u32) -> f32 {
+    if w == 1 { FIRST_REST } else { REST }
 }
 
 /// Générateur pseudo-aléatoire (xorshift64*) propre à la partie : les simulations sont reproductibles.
@@ -89,6 +105,7 @@ pub struct Input {
     pub steer: f32, // > 0 : à gauche
     pub jump: bool,
     pub dash: bool,
+    pub back: bool, // demi-tour
 }
 
 pub struct Crystal {
@@ -133,6 +150,26 @@ pub struct Popup {
     pub col: Color,
 }
 
+/// Ce qui a touché le joueur : l'écran de fin l'explique.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Cause {
+    Meteor,
+    Shock,
+    Drone,
+}
+
+/// Événement sonore d'un pas de simulation. La simulation ne joue rien : `main` passe ces événements à `sound`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Sfx {
+    Chain(u32), // un maillon de combo (cristal, drone détruit), avec la longueur de la chaîne
+    Wrong,      // cristal de la mauvaise couleur
+    Impact,
+    Hit,
+    Dash,
+    Wave,  // vague terminée
+    Drone, // un drone apparaît et s'arme
+}
+
 pub struct Game {
     pub rng: Rng,
     // joueur
@@ -145,6 +182,7 @@ pub struct Game {
     pub jump_buf: f32, // saut demandé juste avant l'atterrissage : il part dès qu'on touche le sol
     pub dash_t: f32,  // temps de dash restant
     pub dash_cd: f32, // recharge restante
+    pub flip: f32,    // angle restant du demi-tour
     pub trail: Vec<Vec3>,
     // monde
     pub crystals: Vec<Crystal>,
@@ -156,7 +194,11 @@ pub struct Game {
     // partie
     pub score: u32,
     pub lives: u32,
-    pub kills: u32,
+    pub kills: u32,      // drones détruits (écrasés ou sous une météorite)
+    pub golds: u32,      // cristaux dorés ramassés
+    pub best_chain: u32, // plus longue chaîne de la partie
+    pub last_hit: Option<Cause>,
+    pub sfx: Vec<Sfx>, // sons du dernier pas
     pub wave: u32,
     pub got: u32,       // progression du quota de la vague
     pub need: usize,    // couleur du prochain cristal à ramasser (indice dans KINDS)
@@ -202,6 +244,7 @@ impl Game {
             jump_buf: 0.0,
             dash_t: 0.0,
             dash_cd: 0.0,
+            flip: 0.0,
             trail: vec![],
             crystals: vec![],
             meteors: vec![],
@@ -212,6 +255,10 @@ impl Game {
             score: 0,
             lives: 3,
             kills: 0,
+            golds: 0,
+            best_chain: 0,
+            last_hit: None,
+            sfx: vec![],
             wave: 0,
             got: 0,
             need: 0,
@@ -239,23 +286,24 @@ impl Game {
     }
 
     pub fn cam_goal(&self) -> Vec3 {
-        // presque à la verticale : sur une petite sphère, c'est le seul angle qui montre le devant
-        self.pos() + self.n * 10.0 - self.f * 3.5
+        // presque à la verticale : sur une petite sphère, c'est le seul angle qui montre le devant. Elle plonge assez
+        // (visée juste devant l'astronaute, voir `camera`) pour montrer aussi ce qui arrive derrière lui.
+        self.pos() + self.n * 9.0 - self.f * 2.0
     }
 
-    /// Multiplicateur de combo, de 1 à 5.
+    /// Multiplicateur de combo : ×1, puis un palier tous les 4 maillons enchaînés, jusqu'à ×5 (16 maillons).
     pub fn mult(&self) -> u32 {
-        self.chain.clamp(1, 5)
+        (1 + self.chain / 4).min(5)
     }
 
-    /// Démarre la vague `w` : pause sans danger, bannière, minuteurs remis à zéro.
+    /// Démarre la vague `w` : pause sans danger, bannière (pendant la pause), minuteurs remis à zéro.
     pub fn start_wave(&mut self, w: u32) {
         self.wave = w;
         self.got = 0;
         self.need = 0;
         self.flawless = true;
-        self.rest = if w == 1 { 1.5 } else { REST };
-        self.banner = 4.0;
+        self.rest = rest_time(w);
+        self.banner = self.rest;
         self.next_meteor = 0.5;
         self.next_salvo = self.rng.range(10.0, 16.0);
         self.drone_cd = 1.0;
@@ -293,19 +341,23 @@ impl Game {
     }
 
     /// Un coup : une vie en moins, 1,5 s d'invulnérabilité, combo et « sans faute » perdus.
-    fn hit(&mut self) {
+    fn hit(&mut self, cause: Cause) {
         self.lives = self.lives.saturating_sub(1);
         self.hurt = 1.5;
         self.shake = 1.0;
         self.chain = 0;
         self.chain_t = 0.0;
         self.flawless = false;
+        self.last_hit = Some(cause);
+        self.sfx.push(Sfx::Hit);
     }
 
-    /// Un maillon de plus dans la chaîne (cristal ou drone écrasé) : renvoie le multiplicateur.
+    /// Un maillon de plus dans la chaîne (cristal ou drone détruit) : renvoie le multiplicateur.
     fn chain_up(&mut self) -> u32 {
         self.chain = if self.chain_t > 0.0 { self.chain + 1 } else { 1 };
         self.chain_t = CHAIN_TIME;
+        self.best_chain = self.best_chain.max(self.chain);
+        self.sfx.push(Sfx::Chain(self.chain));
         self.mult()
     }
 
@@ -327,6 +379,7 @@ impl Game {
         self.clear_hazards();
         self.shocks.push(Shock { dir: self.n, r: 0.0, harmful: false });
         self.pop(self.pos() + self.n * 2.0, format!("VAGUE TERMINÉE +{bonus}"), CYAN);
+        self.sfx.push(Sfx::Wave);
         self.start_wave(self.wave + 1);
     }
 
@@ -360,15 +413,26 @@ impl Game {
         turn(self.n, &mut self.f, 0.4 * dt);
     }
 
-    /// Pilote automatique (tests et captures d'écran) : fuit les impacts, saute les ondes et les
-    /// drones, dash en dernier recours, ramasse le cristal le plus proche de la bonne couleur qui ne sera
-    /// pas détruit, et contourne ceux de la mauvaise couleur.
+    /// Une onde arrive dans le dos du joueur et l'atteint dans moins de 0,5 s : `sound` l'annonce par un bip.
+    pub fn ring_behind(&self) -> bool {
+        let pace = if self.moving { WALK } else { 0.0 };
+        self.shocks.iter().filter(|s| s.harmful).any(|s| {
+            let out = (self.n - s.dir * self.n.dot(s.dir)).normalize_or_zero().dot(self.f); // > 0 : elle vient de derrière
+            let gap = arc(s.dir, self.n) - s.r - SHOCK_BAND; // distance au bord de l'anneau qui blesse
+            out > 0.3 && gap > 0.0 && gap < 0.5 * (SHOCK_SPEED - pace * out)
+        })
+    }
+
+    /// Pilote automatique (tests et captures d'écran) : fuit les impacts, n'avance pas là où une météorite va
+    /// tomber (au centre d'une salve, il attend), saute les ondes et les drones, dash en dernier recours, ramasse
+    /// le cristal le plus proche de la bonne couleur qui ne sera pas détruit, et contourne ceux de la mauvaise.
     pub fn bot(&self) -> Input {
         let here = |d: Vec3| arc(d, self.n);
+        let safe = BLAST + 1.6; // assez loin d'un impact pour sauter l'onde qui en part
         let threat = self
             .meteors
             .iter()
-            .filter(|m| m.alt / FALL < 2.2 && here(m.dir) < BLAST + 1.6) // assez loin pour sauter l'onde qui part de l'impact
+            .filter(|m| m.alt / FALL < 2.2 && here(m.dir) < safe)
             .min_by(|a, b| a.alt.total_cmp(&b.alt));
         let doomed = |c: &Crystal| {
             self.meteors
@@ -397,26 +461,40 @@ impl Game {
         let in_way = if fleeing { None } else { self.crystals.iter().filter(|c| !wanted(c)).find_map(blocking) };
         let r = WALK / TURN; // rayon du virage le plus serré
         let clear = |(front, right): (f32, f32)| (right.abs() + r).powi(2) + front * front > (r + PICKUP + 0.1).powi(2);
-        // ondes pas encore entièrement passées (la zone qui blesse fait 0,6 de chaque côté de l'anneau) :
-        // (écart, part de sa course qui l'éloigne du centre)
-        let rings: Vec<(f32, f32)> = self
-            .shocks
-            .iter()
-            .filter(|s| s.harmful && here(s.dir) - s.r > -0.6)
-            .map(|s| (here(s.dir) - s.r, (self.n - s.dir * self.n.dot(s.dir)).normalize_or_zero().dot(self.f)))
-            .collect();
-        // il saute moins de 0,4 s avant l'arrivée de l'onde, pour que le saut couvre tout son passage. Une onde qui
-        // arrive dans son dos le rattrape à peine plus vite qu'il ne court : il s'arrête pour la laisser passer.
+        // il n'avance pas s'il serait trop près d'une météorite au moment de sa chute en continuant tout droit, ni s'il
+        // est au centre d'une salve (5 météorites ou plus tout autour) : il y attend les ondes pour les sauter d'un coup
+        let lands_near = |m: &Meteor| {
+            let (mut p, mut f) = (self.n, self.f);
+            walk(&mut p, &mut f, WALK * m.alt / FALL);
+            m.alt / FALL < 2.2 && arc(m.dir, p) < safe
+        };
+        let salvo_center = self.meteors.iter().filter(|m| (here(m.dir) - SALVO_RADIUS).abs() < 0.5).count() >= 5;
+        let wait = !fleeing && (salvo_center || self.meteors.iter().any(lands_near));
+        // Ondes qui vont le traverser : celles qui existent, et celles que lanceront les météorites (en r = BLAST, à
+        // l'impact). Il saute au dernier moment, 0,075 à 0,1 s avant que l'anneau qui blesse ne l'atteigne : le saut
+        // (au-dessus du sol de 0,08 à 0,62 s après la décision) couvre tout son passage, même s'il la fuit, les six
+        // ondes d'une salve, et parfois une onde qui suit de près. Près d'un impact, il saute donc avant la chute.
         let pace = if self.moving { WALK } else { 0.0 };
-        let ring_jump = rings.iter().any(|&(gap, out)| gap > 0.0 && gap / (SHOCK_SPEED - pace * out) < 0.4);
-        let ring_behind = !fleeing && rings.iter().any(|&(gap, out)| out > 0.3 && gap < 2.0);
+        let arrival = |dir: Vec3, r: f32, delay: f32| {
+            let out = (self.n - dir * self.n.dot(dir)).normalize_or_zero().dot(self.f); // part de sa course qui l'éloigne du centre
+            delay + (here(dir) - r - SHOCK_BAND) / (SHOCK_SPEED - pace * out)
+        };
+        let rings = self.shocks.iter().filter(|s| s.harmful && here(s.dir) > s.r).map(|s| arrival(s.dir, s.r, 0.0));
+        let future = self.meteors.iter().filter(|m| cfg(self.wave).shocks && here(m.dir) > BLAST);
+        let arrivals: Vec<f32> = rings.chain(future.map(|m| arrival(m.dir, BLAST, m.alt / FALL))).collect();
+        let ring_jump = arrivals.iter().any(|t| (0.075..0.1).contains(t));
+        // trop tard pour sauter, et il sera bas quand l'onde arrive (h(t) = h + vh·t − 11·t², gravité de 22) : le dash
+        // le rend invulnérable pendant son passage
+        let low_at = |t: f32| self.h + self.vh * t - 11.0 * t * t < GROUND;
+        let ring_dash = arrivals.iter().any(|&t| (0.0..0.075).contains(&t) && low_at(t));
         let drone_close = self.drones.iter().any(|d| d.arm <= 0.0 && here(d.n) < 2.2);
         Input {
             // n'avance que face au but, sinon il tourne en orbite
-            fwd: !ring_behind && in_way.map_or(goal.is_some() && (fleeing || ahead > 0.3), clear),
+            fwd: !wait && in_way.map_or(goal.is_some() && (fleeing || ahead > 0.3), clear),
             steer: in_way.map_or(steer, |(_, right)| if right > 0.0 { 1.0 } else { -1.0 }),
             jump: self.h == 0.0 && (ring_jump || drone_close),
-            dash: threat.is_some_and(|m| m.alt / FALL < 0.8 && here(m.dir) < BLAST),
+            dash: ring_dash || threat.is_some_and(|m| m.alt / FALL < 0.8 && here(m.dir) < BLAST),
+            ..Default::default()
         }
     }
 
@@ -433,13 +511,14 @@ impl Game {
         }
     }
 
-    /// Anneau de 6 météorites autour du joueur, impacts échelonnés : le centre est sûr.
+    /// Anneau de 6 météorites autour du joueur, qui tombent presque ensemble (en 0,125 s) : leurs ondes se
+    /// rejoignent au centre en 0,25 s, qu'un seul saut bien placé franchit. On peut aussi sortir avant les impacts.
     fn salvo(&mut self) {
-        let ring = circle(self.n, 7.0);
+        let ring = circle(self.n, SALVO_RADIUS);
         let phase = self.rng.range(0.0, 32.0) as usize;
         for i in 0..6 {
             let dir = ring[(i * 5 + phase) % 32];
-            self.meteors.push(Meteor { dir, alt: ALT0 + 1.5 * i as f32, spin: self.rng.range(0.0, TAU) });
+            self.meteors.push(Meteor { dir, alt: ALT0 + 0.3 * i as f32, spin: self.rng.range(0.0, TAU) });
         }
     }
 
@@ -449,6 +528,7 @@ impl Game {
             if (12.0..22.0).contains(&arc(n, self.n)) {
                 self.drones.push(Drone { n, f: n.any_orthonormal_vector(), arm: 1.2 });
                 self.drone_cd = 4.0;
+                self.sfx.push(Sfx::Drone);
                 return;
             }
         }
@@ -458,6 +538,7 @@ impl Game {
     fn impact(&mut self, dir: Vec3, shock: bool) {
         self.burst(dir * R, FIRE, 30);
         self.shake = self.shake.max(0.4);
+        self.sfx.push(Sfx::Impact);
         if shock {
             self.shocks.push(Shock { dir, r: BLAST, harmful: true });
         }
@@ -481,14 +562,16 @@ impl Game {
             !hit
         });
         for p in crushed {
+            // attirer un drone sous une météorite vaut autant que l'écraser, maillon de combo compris
             self.kills += 1;
-            self.score += 20;
             self.drone_cd = 4.0;
+            let pts = 30 * self.chain_up();
+            self.score += pts;
             self.burst(p * (R + 0.6), DRONE, 16);
-            self.pop(p * (R + 1.5), "+20", DRONE);
+            self.pop(p * (R + 1.5), format!("+{pts}"), DRONE);
         }
         if arc(dir, self.n) < BLAST && self.h < 0.8 && self.vulnerable() {
-            self.hit();
+            self.hit(Cause::Meteor);
         }
     }
 
@@ -504,6 +587,7 @@ impl Game {
     }
 
     pub fn step(&mut self, dt: f32, inp: Input) {
+        self.sfx.clear();
         self.tick(dt);
         let c = cfg(self.wave);
 
@@ -512,6 +596,7 @@ impl Game {
             self.dash_t = DASH_TIME;
             self.dash_cd = DASH_CD;
             self.burst(self.pos(), CYAN, 12);
+            self.sfx.push(Sfx::Dash);
         }
         let dashing = self.dash_t > 0.0;
         self.moving = inp.fwd || dashing;
@@ -522,7 +607,13 @@ impl Game {
                 self.stride += speed * dt;
             }
         }
-        turn(self.n, &mut self.f, inp.steer * TURN * dt);
+        // demi-tour : un appui lance une rotation rapide de 180° (vers la gauche)
+        if inp.back && self.flip == 0.0 {
+            self.flip = PI;
+        }
+        let flip = self.flip.min(FLIP_SPEED * dt);
+        self.flip -= flip;
+        turn(self.n, &mut self.f, inp.steer * TURN * dt + flip);
 
         // saut (mémorisé 0,12 s : demandé un peu avant l'atterrissage, il part quand même)
         if inp.jump {
@@ -545,14 +636,15 @@ impl Game {
             }
         }
 
-        // cristaux : ils expirent, on les ramasse en chaîne, dans l'ordre des couleurs (le doré est un joker)
+        // cristaux : ils expirent, on les ramasse au sol (un saut passe par-dessus), en chaîne, dans l'ordre des
+        // couleurs (le doré est un joker)
         for k in &mut self.crystals {
             k.life -= dt;
         }
         self.crystals.retain(|k| k.life > 0.0);
         let mut i = 0;
         while i < self.crystals.len() {
-            if arc(self.crystals[i].dir, self.n) < PICKUP && self.h < 1.8 {
+            if arc(self.crystals[i].dir, self.n) < PICKUP && self.h < GROUND {
                 let k = self.crystals.swap_remove(i);
                 if !k.gold && k.kind != self.need {
                     // mauvaise couleur : une case en moins et le combo cassé, même pendant un dash
@@ -560,9 +652,11 @@ impl Game {
                     (self.chain, self.chain_t) = (0, 0.0);
                     self.burst(k.dir * (R + 1.0), GRAY, 18);
                     self.pop(k.dir * (R + 2.0), "-1", DRONE);
+                    self.sfx.push(Sfx::Wrong);
                     continue;
                 }
                 self.need = (self.need + 1) % c.kinds;
+                self.golds += k.gold as u32;
                 let (base, worth, col) = if k.gold { (50, 3, AMBER) } else { (10, 1, KINDS[k.kind]) };
                 let pts = base * self.chain_up();
                 self.score += pts;
@@ -604,8 +698,8 @@ impl Game {
             s.r += SHOCK_SPEED * dt;
         }
         let n = self.n;
-        if self.h < 0.5 && self.vulnerable() && self.shocks.iter().any(|s| s.harmful && (arc(s.dir, n) - s.r).abs() < 0.6) {
-            self.hit();
+        if self.h < GROUND && self.vulnerable() && self.shocks.iter().any(|s| s.harmful && (arc(s.dir, n) - s.r).abs() < SHOCK_BAND) {
+            self.hit(Cause::Shock);
         }
         self.shocks.retain(|s| s.r < if s.harmful { SHOCK_MAX } else { 2.0 * SHOCK_MAX });
 
@@ -645,7 +739,7 @@ impl Game {
             self.stomp(p);
         }
         if touched && self.vulnerable() {
-            self.hit();
+            self.hit(Cause::Drone);
         }
     }
 }
@@ -673,21 +767,24 @@ mod tests {
     }
 
     #[test]
-    fn combo_chains_within_the_window_and_resets_after() {
+    fn combo_climbs_every_4_links_within_the_window_and_resets_after() {
         let mut g = calm();
+        for _ in 0..3 {
+            crystal_here(&mut g, false);
+            g.step(DT, Input::default());
+        }
+        assert_eq!((g.score, g.mult()), (30, 1));
         crystal_here(&mut g, false);
         g.step(DT, Input::default());
-        assert_eq!((g.score, g.mult()), (10, 1));
-        crystal_here(&mut g, false);
-        g.step(DT, Input::default());
-        assert_eq!((g.score, g.mult()), (10 + 20, 2));
+        assert_eq!((g.score, g.mult(), g.best_chain), (30 + 20, 2, 4));
+        assert_eq!(g.sfx, [Sfx::Chain(4)]);
         for _ in 0..(CHAIN_TIME * 60.0) as usize + 5 {
             g.step(DT, Input::default());
         }
         assert_eq!(g.chain, 0);
         crystal_here(&mut g, false);
         g.step(DT, Input::default());
-        assert_eq!(g.score, 10 + 20 + 10);
+        assert_eq!((g.score, g.best_chain), (30 + 20 + 10, 4));
     }
 
     #[test]
@@ -733,7 +830,7 @@ mod tests {
         let mut g = calm();
         crystal_here(&mut g, true);
         g.step(DT, Input::default());
-        assert_eq!((g.score, g.got), (50, 3));
+        assert_eq!((g.score, g.got, g.golds), (50, 3, 1));
     }
 
     #[test]
@@ -777,14 +874,15 @@ mod tests {
         let mut g = calm();
         meteor_here(&mut g);
         g.step(0.1, Input::default());
-        assert_eq!(g.lives, 2);
+        assert_eq!((g.lives, g.last_hit), (2, Some(Cause::Meteor)));
         assert!(g.meteors.is_empty());
+        assert!(g.sfx.contains(&Sfx::Impact) && g.sfx.contains(&Sfx::Hit));
 
         let mut g = calm();
         g.h = 2.0;
         meteor_here(&mut g);
         g.step(0.1, Input::default());
-        assert_eq!(g.lives, 3);
+        assert_eq!((g.lives, g.last_hit), (3, None));
     }
 
     #[test]
@@ -811,7 +909,8 @@ mod tests {
         g.step(0.1, Input::default());
         assert!(g.crystals.iter().all(|c| arc(c.dir, dir) >= BLAST));
         assert!(g.drones.is_empty());
-        assert_eq!((g.kills, g.score), (1, 20));
+        // un drone attiré sous une météorite vaut un écrasement : 30 points et un maillon de combo
+        assert_eq!((g.kills, g.score, g.chain), (1, 30, 1));
         assert_eq!(g.lives, 3);
     }
 
@@ -825,7 +924,39 @@ mod tests {
             g.shocks.push(Shock { dir: d, r: 4.9, harmful: true });
             g.step(0.02, Input::default());
             assert_eq!(g.lives, lives, "hauteur {h}");
+            assert_eq!(g.last_hit, (lives == 2).then_some(Cause::Shock));
         }
+    }
+
+    #[test]
+    fn a_jump_clears_a_shock_born_just_behind_a_fleeing_player() {
+        // l'onde naît juste hors de portée (BLAST + SHOCK_BAND + 0,1) derrière le joueur, qui fuit tout droit
+        let run = |jump_at: Option<usize>| {
+            let mut g = calm();
+            for i in 0..60 {
+                if i == 20 {
+                    let (mut d, mut f) = (g.n, -g.f);
+                    walk(&mut d, &mut f, BLAST + SHOCK_BAND + 0.1);
+                    g.shocks.push(Shock { dir: d, r: BLAST, harmful: true });
+                }
+                g.step(DT, Input { fwd: true, jump: jump_at == Some(i), ..Default::default() });
+            }
+            g.lives
+        };
+        assert_eq!(run(None), 2, "sans saut, l'onde le rattrape");
+        let saved = (0..20).filter(|&i| run(Some(i)) == 3).count();
+        assert!(saved >= 8, "seulement {saved} instants de saut sur 20 franchissent l'onde");
+    }
+
+    #[test]
+    fn ring_behind_warns_only_for_a_shock_coming_from_behind() {
+        let mut g = calm();
+        let (mut d, mut f) = (g.n, -g.f);
+        walk(&mut d, &mut f, 5.0);
+        g.shocks.push(Shock { dir: d, r: BLAST, harmful: true }); // derrière lui, l'atteint dans 0,14 s
+        assert!(g.ring_behind());
+        g.f = -g.f; // face à l'onde : il la voit
+        assert!(!g.ring_behind());
     }
 
     #[test]
@@ -867,7 +998,7 @@ mod tests {
         let mut g = calm();
         g.drones.push(Drone { n: g.n, f: g.f, arm: 0.0 });
         g.step(DT, Input::default());
-        assert_eq!(g.lives, 2);
+        assert_eq!((g.lives, g.last_hit), (2, Some(Cause::Drone)));
     }
 
     #[test]
@@ -883,27 +1014,107 @@ mod tests {
         assert!(arc(g.drones[0].n, g.n) < before - 3.0 || g.lives < 3);
     }
 
+    /// Vague `w` sans danger qui apparaît tout seul : seulement ce que le test ajoute.
+    fn calm_wave(w: u32) -> Game {
+        let mut g = calm();
+        g.start_wave(w);
+        g.rest = 1e6;
+        g
+    }
+
     #[test]
-    fn salvo_makes_a_ring_with_a_safe_center() {
+    fn salvo_makes_a_ring_that_falls_almost_at_once() {
         let mut g = calm();
         g.salvo();
         assert_eq!(g.meteors.len(), 6);
-        assert!(g.meteors.iter().all(|m| (arc(m.dir, g.n) - 7.0).abs() < 0.2));
+        assert!(g.meteors.iter().all(|m| (arc(m.dir, g.n) - SALVO_RADIUS).abs() < 0.2));
+        let alts = g.meteors.iter().map(|m| m.alt);
+        let spread = alts.clone().fold(f32::MIN, f32::max) - alts.fold(f32::MAX, f32::min);
+        assert!(spread / FALL < 0.15, "les impacts s'étalent sur {:.2} s", spread / FALL);
+    }
+
+    #[test]
+    fn in_the_salvo_center_one_well_timed_jump_clears_all_six_shocks() {
+        let run = |jump_at: Option<usize>| {
+            let mut g = calm_wave(4);
+            g.salvo();
+            for i in 0..200 {
+                g.step(DT, Input { jump: jump_at == Some(i), ..Default::default() });
+            }
+            g.lives
+        };
+        assert_eq!(run(None), 2, "immobile au centre, les ondes le touchent");
+        let saved = (100..180).filter(|&i| run(Some(i)) == 3).count();
+        assert!(saved >= 10, "seulement {saved} instants de saut franchissent la salve");
+    }
+
+    #[test]
+    fn the_bot_clears_a_salvo_from_the_center() {
+        let mut g = calm_wave(4);
+        g.salvo();
+        for _ in 0..200 {
+            g.crystals.clear(); // rien à ramasser : il reste au centre
+            let inp = g.bot();
+            g.step(DT, inp);
+        }
+        assert_eq!(g.lives, 3);
+    }
+
+    #[test]
+    fn the_bot_does_not_walk_where_a_meteor_is_about_to_land() {
+        let mut g = calm();
+        g.crystals.clear();
+        let (mut d, mut f) = (g.n, g.f);
+        walk(&mut d, &mut f, 12.0);
+        g.crystals.push(Crystal { dir: d, life: 9.0, gold: false, kind: 0 }); // son but, droit devant
+        assert!(g.bot().fwd);
+        let (mut d, mut f) = (g.n, g.f);
+        walk(&mut d, &mut f, 6.0);
+        g.meteors.push(Meteor { dir: d, alt: FALL, spin: 0.0 }); // tombe dans 1 s, là où il serait
+        assert!(!g.bot().fwd);
+    }
+
+    #[test]
+    fn a_jump_passes_over_a_crystal() {
+        // le joueur court droit sur un cristal posé 3 unités devant lui : l'a-t-il laissé ?
+        let run = |jump_at: Option<usize>| {
+            let mut g = calm();
+            let (mut d, mut f) = (g.n, g.f);
+            walk(&mut d, &mut f, 3.0);
+            g.crystals.push(Crystal { dir: d, life: 9.0, gold: false, kind: 0 });
+            for i in 0..60 {
+                g.step(DT, Input { fwd: true, jump: jump_at == Some(i), ..Default::default() });
+            }
+            g.crystals.iter().any(|c| c.dir == d)
+        };
+        assert!(!run(None), "au sol, il le ramasse");
+        assert!((0..20).any(|i| run(Some(i))), "un saut bien placé passe par-dessus");
+    }
+
+    #[test]
+    fn back_turns_around_quickly() {
+        let mut g = calm();
+        let f0 = g.f;
+        g.step(DT, Input { back: true, ..Default::default() });
+        for _ in 0..15 {
+            g.step(DT, Input::default());
+        }
+        assert!(g.f.dot(f0) < -0.99, "regard {}", g.f.dot(f0)); // demi-tour fait en 0,27 s
     }
 
     #[test]
     fn waves_add_dangers_and_ask_for_more() {
         let (a, b) = (cfg(1), cfg(5));
         assert!(!a.shocks && !a.salvos && a.drones == 0 && a.lead == 0.0 && a.kinds == 1);
-        assert!(b.shocks && b.salvos && b.drones >= 2 && b.lead > 0.4 && b.kinds == 3);
+        assert!(b.shocks && b.salvos && b.lead > 0.4 && b.kinds == 3);
         assert!(b.quota > a.quota && b.every < a.every && b.crystals > a.crystals);
+        // la vague 5 introduit l'ordre des couleurs sans rien durcir d'autre : le deuxième drone attend la vague 6
+        assert_eq!((cfg(4).drones, b.drones, cfg(6).drones), (1, 1, 2));
     }
 
     /// Vague 5 sans danger, sans cristal.
     fn calm_wave_5() -> Game {
-        let mut g = calm();
-        g.start_wave(5);
-        g.rest = 1e6;
+        let mut g = calm_wave(5);
         g.crystals.clear();
         g
     }
@@ -949,16 +1160,14 @@ mod tests {
 
     // ---------- simulations d'équilibrage (sans fenêtre) ----------
 
-    /// Joue une partie complète : (vague atteinte, score, secondes jouées).
-    fn simulate(seed: u64, pilot: fn(&Game) -> Input, max_secs: f32) -> (u32, u32, f32) {
+    /// Joue une partie complète, jusqu'à la défaite ou `max_secs` secondes de jeu, et la renvoie.
+    fn simulate(seed: u64, pilot: fn(&Game) -> Input, max_secs: f32) -> Game {
         let mut g = Game::new(seed);
-        let mut t = 0.0;
-        while g.lives > 0 && t < max_secs {
+        while g.lives > 0 && g.t < max_secs {
             let inp = pilot(&g);
             g.step(DT, inp);
-            t += DT;
         }
-        (g.wave, g.score, t)
+        g
     }
 
     fn idle(_: &Game) -> Input {
@@ -975,15 +1184,15 @@ mod tests {
     #[test]
     fn standing_still_loses_quickly() {
         for seed in 1..=6 {
-            let (wave, _, secs) = simulate(seed, idle, 120.0);
-            assert!(wave == 1 && secs < 90.0, "graine {seed} : vague {wave}, {secs:.0} s");
+            let g = simulate(seed, idle, 120.0);
+            assert!(g.wave == 1 && g.t < 90.0, "graine {seed} : vague {}, {:.0} s", g.wave, g.t);
         }
     }
 
     #[test]
     fn dodging_matters_and_the_game_stays_hard() {
         let mean = |pilot: fn(&Game) -> Input| {
-            let waves: Vec<u32> = (1..=6).map(|s| simulate(s, pilot, 400.0).0).collect();
+            let waves: Vec<u32> = (1..=6).map(|s| simulate(s, pilot, 400.0).wave).collect();
             (waves.iter().sum::<u32>() as f32 / waves.len() as f32, *waves.iter().max().unwrap())
         };
         let ((naive_avg, _), (bot_avg, bot_max)) = (mean(naive), mean(Game::bot));
@@ -996,14 +1205,20 @@ mod tests {
     #[ignore]
     fn balance_report() {
         for (name, pilot) in [("inactif", idle as fn(&Game) -> Input), ("naïf", naive), ("esquiveur", Game::bot)] {
-            let runs: Vec<_> = (1..=20).map(|s| simulate(s, pilot, 900.0)).collect();
-            let avg = |f: fn(&(u32, u32, f32)) -> f32| runs.iter().map(f).sum::<f32>() / runs.len() as f32;
+            let runs: Vec<Game> = (1..=20).map(|s| simulate(s, pilot, 900.0)).collect();
+            let avg = |f: fn(&Game) -> f32| runs.iter().map(f).sum::<f32>() / runs.len() as f32;
+            let deaths = |c: Cause| runs.iter().filter(|g| g.lives == 0 && g.last_hit == Some(c)).count();
             println!(
-                "{name:10} vagues {:?}\n{:10} durée moy. {:.0} s, score moy. {:.0}",
-                runs.iter().map(|r| r.0).collect::<Vec<_>>(),
+                "{name:10} vagues {:?}\n{:10} durée moy. {:.0} s, score moy. {:.0}, meilleure chaîne moy. {:.1}\n{:10} morts : météorite {}, onde {}, drone {}",
+                runs.iter().map(|g| g.wave).collect::<Vec<_>>(),
                 "",
-                avg(|r| r.2),
-                avg(|r| r.1 as f32)
+                avg(|g| g.t),
+                avg(|g| g.score as f32),
+                avg(|g| g.best_chain as f32),
+                "",
+                deaths(Cause::Meteor),
+                deaths(Cause::Shock),
+                deaths(Cause::Drone)
             );
         }
     }

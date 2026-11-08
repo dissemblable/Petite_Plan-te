@@ -51,10 +51,14 @@ pub fn astronaut(g: &Game, sprites: &mut Vec<Sprite>) {
     part(vec3(0.12, 1.42 + breath, -0.05), vec3(0.012, 0.12, 0.012), GEAR, CYAN);
     let blink = (g.t * 4.0).sin() > 0.3;
     lit(vec3(0.12, 1.56 + breath, -0.05), Vec3::splat(0.03), if blink { HOTPINK } else { shade(HOTPINK, 0.25) });
-    // sac à dos et réacteurs
+    // sac à dos et réacteurs, allumés quand le dash est prêt : pas besoin de quitter l'astronaute des yeux
     part(vec3(0.0, 0.66, -0.26), vec3(0.17, 0.25, 0.1), shade(HOTPINK, 0.55), HOTPINK);
     for x in [-0.09, 0.09] {
-        part(vec3(x, 0.36, -0.33), vec3(0.04, 0.05, 0.04), GEAR, HOTPINK);
+        if g.dash_cd == 0.0 {
+            lit(vec3(x, 0.36, -0.33), vec3(0.04, 0.05, 0.04), CYAN);
+        } else {
+            part(vec3(x, 0.36, -0.33), vec3(0.04, 0.05, 0.04), GEAR, HOTPINK);
+        }
     }
     // jambes et bras : ils se balancent avec la distance parcourue ; repliés et levés en l'air
     let (leg_l, leg_r) = if air { (0.55, -0.45) } else { (stride, -stride) };
@@ -90,7 +94,9 @@ pub fn crystal(g: &Game, i: usize, k: &Crystal, sprites: &mut Vec<Sprite>) {
     let (u, w) = (q * c.any_orthonormal_vector(), q * c.cross(c.any_orthonormal_vector()));
     let base = c * (R + 1.7 + (g.t * 3.0 + i as f32 * 2.0).sin() * 0.15);
     let edge = mix(col, WHITE, 0.75);
-    draw_line_3d(c * R, c * (R + 12.0), Color { a: 0.35, ..col }); // faisceau visible depuis l'autre côté de l'horizon
+    // faisceau visible depuis l'autre côté de l'horizon : vif pour un cristal à prendre, pâle pour les autres
+    let wanted = k.gold || k.kind == g.need;
+    draw_line_3d(c * R, c * (R + 12.0), Color { a: if wanted { 0.5 } else { 0.1 }, ..col });
     // une forme par couleur, pour ne pas dépendre de la seule couleur : prisme, cube, cube posé sur la pointe
     let tip = Quat::from_rotation_arc((u + c + w).normalize(), c); // la grande diagonale du cube à la verticale
     let (half, ax) = match k.kind {
@@ -150,8 +156,9 @@ pub fn drone(g: &Game, d: &Drone, sprites: &mut Vec<Sprite>) {
     let p = n * (R + 0.8 + 0.1 * (g.t * 5.0).sin());
     let r = f.cross(n);
     let ax = [r, n, f];
-    // anneau pointillé au sol : la zone de contact
+    // anneau pointillé au sol : la zone de contact ; faisceau rouge pour le repérer au-delà de l'horizon
     dashed_ring(n, 0.9, 0.09, Color { a: if ready { 0.7 } else { 0.25 }, ..DRONE }, g.t * 5.0);
+    draw_line_3d(n * R, n * (R + 12.0), Color { a: if ready { 0.5 } else { 0.2 }, ..DRONE });
     draw_box(p, ax, vec3(0.42, 0.14, 0.42), GEAR, DRONE);
     draw_box(p + n * 0.2, ax, vec3(0.25, 0.1, 0.25), GEAR, DRONE);
     glow_box(p + f * 0.43 + n * 0.02, ax, vec3(0.15, 0.07, 0.05), eye);

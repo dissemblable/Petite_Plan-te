@@ -13,9 +13,18 @@ pub fn wave_text(w: u32) -> (&'static str, &'static str) {
         1 => ("PLUIE", "Ramasse les cristaux et évite les zones d'impact."),
         2 => ("ONDES", "Les impacts lancent des ondes : saute par-dessus ! Le cristal doré est risqué."),
         3 => ("CHASSEURS", "Retombe sur un drone pour l'écraser, ou attire-le sous une météorite."),
-        4 => ("SALVES", "Les salves t'encerclent : reste au centre ou fuis par une brèche."),
-        5 => ("ORDRE", "Cristaux dans l'ordre cyan, rose, vert : un mauvais coûte une case !"),
-        _ => ("CHAOS", "Les météorites visent devant toi. Change de direction !"),
+        4 => ("SALVES", "Les salves t'encerclent : sors vite, ou saute quand les ondes se rejoignent."),
+        5 => ("ORDRE", "Cyan, rose, vert dans l'ordre ! Un mauvais coûte une case : saute par-dessus."),
+        _ => ("CHAOS", "Plus de drones, plus de météorites, qui visent là où tu vas : change de cap !"),
+    }
+}
+
+/// Dernier coup reçu : ce qui l'a donné, et comment l'éviter la prochaine fois.
+fn cause_text(c: Cause) -> (&'static str, &'static str) {
+    match c {
+        Cause::Meteor => ("Touché par une météorite", "Sors de la zone rouge avant l'impact, ou saute juste avant."),
+        Cause::Shock => ("Touché par une onde", "Saute quand l'anneau arrive sur toi, même en le fuyant."),
+        Cause::Drone => ("Touché par un drone", "Saute, puis retombe dessus pour l'écraser."),
     }
 }
 
@@ -117,26 +126,31 @@ pub fn hud(g: &Game, best: u32) {
     cells(Rect::new(30.0, 124.0, 150.0, 8.0), (ready * 5.0) as u32, 5, if ready >= 1.0 { CYAN } else { GRAY }, now);
     draw_text("MAJ", 192.0, 133.0, 18.0, LABEL);
 
-    // vague et quota : une case par cristal
+    // vague et quota : une case par cristal ; dessous, le bonus doublé « sans faute », qui s'éteint au premier coup
     let (name, _) = wave_text(g.wave);
     let pw = 400.0;
     let px = (w - pw) / 2.0;
-    panel(px, 14.0, pw, 66.0, t);
+    panel(px, 14.0, pw, 86.0, t);
     glow_say(&format!("VAGUE {} : {name}", g.wave), 46.0, 28.0, t);
     cells(Rect::new(px + 20.0, 58.0, pw - 40.0, 10.0), g.got.min(c.quota), c.quota, t, now);
+    if g.flawless {
+        say("SANS FAUTE : BONUS x2", 90.0, 20.0, AMBER);
+    } else {
+        say("SANS FAUTE : PERDU", 90.0, 20.0, Color { a: 0.35, ..LABEL });
+    }
 
     // ordre des couleurs (vague 5 et plus) : le cristal attendu en grand, puis les suivants
     if c.kinds > 1 {
         let x = w / 2.0 - 100.0;
-        panel(x, 88.0, 200.0, 50.0, KINDS[g.need]);
-        draw_text("ORDRE", x + 16.0, 120.0, 20.0, LABEL);
+        panel(x, 108.0, 200.0, 50.0, KINDS[g.need]);
+        draw_text("ORDRE", x + 16.0, 140.0, 20.0, LABEL);
         for i in 0..c.kinds {
             let (cx, s) = if i == 0 { (x + 110.0, 30.0) } else { (x + 120.0 + 28.0 * i as f32, 18.0) };
-            gem((g.need + i) % c.kinds, cx, 113.0, s);
+            gem((g.need + i) % c.kinds, cx, 133.0, s);
         }
     }
 
-    // record et combo
+    // record et combo (multiplicateur, longueur de la chaîne, temps pour la prolonger)
     panel(w - 296.0, 14.0, 280.0, 54.0, AMBER);
     draw_text("RECORD", w - 282.0, 46.0, 20.0, LABEL);
     let record = best.max(g.score).to_string();
@@ -144,18 +158,23 @@ pub fn hud(g: &Game, best: u32) {
     if g.chain >= 2 {
         panel(w - 216.0, 78.0, 200.0, 92.0, AMBER);
         glow_text(&format!("x{}", g.mult()), w - 200.0, 146.0, 72.0, AMBER);
+        draw_text("CHAÎNE", w - 104.0, 108.0, 20.0, LABEL);
+        glow_text(&g.chain.to_string(), w - 104.0, 144.0, 40.0, WHITE);
         cells(Rect::new(w - 200.0, 154.0, 168.0, 6.0), (5.0 * g.chain_t / CHAIN_TIME).ceil() as u32, 5, AMBER, now);
     }
 
-    // bannière de vague : glisse, s'attarde, s'efface ; un trait se déploie dessous
+    // bannière de vague, pendant la pause du début : glisse, s'attarde, s'efface ; un trait se déploie dessous
     if g.banner > 0.0 {
         let (name, tip) = wave_text(g.wave);
-        let into = ease((4.0 - g.banner) / 0.45);
-        let a = into * g.banner.min(1.0);
+        let shown = rest_time(g.wave) - g.banner; // temps depuis son apparition
+        let into = ease(shown / 0.45);
+        let a = into * (g.banner / 0.5).min(1.0);
         let dy = (1.0 - into) * 24.0;
         glow_say(&format!("VAGUE {} : {name}", g.wave), 214.0 + dy, 72.0, Color { a, ..t });
-        let half = 260.0 * ease((4.0 - g.banner) / 0.6);
+        let half = 260.0 * ease(shown / 0.6);
         draw_line(w / 2.0 - half, 232.0, w / 2.0 + half, 232.0, 2.0, Color { a, ..t });
+        let tw = width(tip, 30.0);
+        draw_rectangle((w - tw) / 2.0 - 18.0, 248.0 + dy, tw + 36.0, 36.0, Color { a: PANEL.a * a, ..PANEL }); // lisible sur la planète
         say(tip, 272.0 + dy, 30.0, Color { a: a * 0.9, ..WHITE });
     }
 }
@@ -184,9 +203,11 @@ pub fn title() {
     let w = screen_width();
     glow_say("PETITE PLANÈTE", 200.0, 96.0, Color { a: 0.88 + 0.12 * (get_time() as f32 * 2.0).sin(), ..CYAN });
     say("Ramasse les cristaux, évite les météorites, enchaîne les vagues", 262.0, 34.0, WHITE);
-    panel((w - 860.0) / 2.0, 292.0, 860.0, 76.0, CYAN);
-    say("Flèches ou ZQSD/WASD : bouger     ESPACE : sauter     MAJ : dash", 322.0, 28.0, LABEL);
-    say("P : pause     G : lueur     ÉCHAP : quitter", 354.0, 28.0, LABEL);
+    // sous l'astronaute, qui est au centre de l'écran
+    panel((w - 860.0) / 2.0, 452.0, 860.0, 108.0, CYAN);
+    say("Flèches ou ZQSD/WASD : avancer, tourner, faire demi-tour", 482.0, 28.0, LABEL);
+    say("ESPACE : sauter     MAJ : dash     P ou ÉCHAP : pause", 514.0, 28.0, LABEL);
+    say("G : lueur     ÉCHAP deux fois : quitter", 546.0, 28.0, LABEL);
     prompt("Appuie sur ESPACE", 670.0, HOTPINK);
 }
 
@@ -197,15 +218,25 @@ pub fn pause() {
     say("P : reprendre     ÉCHAP : quitter", 372.0, 30.0, LABEL);
 }
 
-pub fn over(g: &Game, best: u32, new_record: bool) {
+/// Écran de fin : ce qui a touché le joueur en dernier et comment l'éviter, puis les chiffres de la partie.
+/// L'invite n'apparaît que lorsque ESPACE est accepté (`ready`).
+pub fn over(g: &Game, best: u32, new_record: bool, ready: bool) {
     let w = screen_width();
-    panel((w - 600.0) / 2.0, 150.0, 600.0, 290.0, HOTPINK);
-    glow_say("PERDU !", 240.0, 96.0, HOTPINK);
-    say(&format!("Vague {}     Score {}", g.wave, g.score), 312.0, 44.0, WHITE);
-    if new_record {
-        glow_say("NOUVEAU RECORD !", 376.0, 36.0, AMBER);
-    } else {
-        say(&format!("Record : {best}"), 376.0, 36.0, LABEL);
+    panel((w - 720.0) / 2.0, 130.0, 720.0, 390.0, HOTPINK);
+    glow_say("PERDU !", 220.0, 96.0, HOTPINK);
+    say(&format!("Vague {}     Score {}", g.wave, g.score), 290.0, 44.0, WHITE);
+    if let Some(cause) = g.last_hit {
+        let (what, tip) = cause_text(cause);
+        glow_say(what, 346.0, 34.0, AMBER);
+        say(tip, 384.0, 26.0, WHITE);
     }
-    prompt("ESPACE pour rejouer", 640.0, CYAN);
+    say(&format!("Chaîne max {}     Drones détruits {}     Dorés {}", g.best_chain, g.kills, g.golds), 430.0, 26.0, LABEL);
+    if new_record {
+        glow_say("NOUVEAU RECORD !", 488.0, 36.0, AMBER);
+    } else {
+        say(&format!("Record : {best}"), 488.0, 36.0, LABEL);
+    }
+    if ready {
+        prompt("ESPACE pour rejouer", 640.0, CYAN);
+    }
 }

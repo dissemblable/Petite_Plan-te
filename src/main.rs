@@ -6,6 +6,7 @@ mod game;
 mod hud;
 mod models;
 mod planet;
+mod sound;
 mod sphere;
 
 use draw::Scene;
@@ -20,6 +21,7 @@ fn keyboard() -> Input {
         steer: key(KeyCode::A, KeyCode::Left) as i32 as f32 - key(KeyCode::D, KeyCode::Right) as i32 as f32,
         jump: is_key_pressed(KeyCode::Space),
         dash: is_key_pressed(KeyCode::LeftShift) || is_key_pressed(KeyCode::RightShift),
+        back: is_key_pressed(KeyCode::S) || is_key_pressed(KeyCode::Down),
     }
 }
 
@@ -96,12 +98,16 @@ async fn main() {
     }
     match state {
         State::Title => g.crystals.clear(), // écran titre : seulement la planète et l'astronaute
-        State::Over => (g.score, g.wave, g.lives) = (1234, 4, 0),
+        State::Over => {
+            (g.score, g.wave, g.lives, g.last_hit) = (1234, 4, 0, Some(Cause::Shock));
+            (g.best_chain, g.kills, g.golds) = (9, 3, 2);
+        }
         _ => {}
     }
 
+    let mut sounds = sound::Sounds::load().await; // chargés aussi par l'outil de capture, qui ne les joue pas
     let mut best = load_record(RECORD_FILE);
-    let (mut new_record, mut frames) = (false, 0);
+    let (mut new_record, mut frames, mut over_t) = (false, 0, 0.0f32);
     let (mut frame_sum, mut frame_max) = (0.0f32, 0.0f32); // durée des images, pour l'outil de capture
 
     loop {
@@ -111,14 +117,12 @@ async fn main() {
             frame_sum += raw; // on saute les premières images (compilation des shaders, etc.)
             frame_max = frame_max.max(raw);
         }
-        if is_key_pressed(KeyCode::Escape) {
-            break;
-        }
         if is_key_pressed(KeyCode::G) {
             scene.bloom_on = !scene.bloom_on;
         }
         match state {
-            State::Play if is_key_pressed(KeyCode::P) => state = State::Pause,
+            // ÉCHAP met en pause : beaucoup de joueurs l'utilisent pour ça, la partie n'est pas perdue
+            State::Play if is_key_pressed(KeyCode::P) || is_key_pressed(KeyCode::Escape) => state = State::Pause,
             State::Play => {
                 let inp = match shot.as_deref() {
                     Some("play") => g.bot(),
@@ -126,6 +130,9 @@ async fn main() {
                     _ => keyboard(),
                 };
                 g.step(dt, inp);
+                if let (None, Some(s)) = (&shot, &mut sounds) {
+                    s.update(&g, dt);
+                }
                 if g.lives == 0 {
                     g.clear_hazards();
                     g.crystals.clear(); // écran de fin : seulement la planète et l'astronaute
@@ -134,17 +141,26 @@ async fn main() {
                         best = g.score;
                         save_record(RECORD_FILE, best);
                     }
+                    over_t = 0.0;
                     state = State::Over;
                 }
             }
             State::Pause => {
+                if is_key_pressed(KeyCode::Escape) {
+                    break;
+                }
                 if is_key_pressed(KeyCode::P) {
                     state = State::Play;
                 }
             }
             State::Title | State::Over => {
+                if is_key_pressed(KeyCode::Escape) {
+                    break;
+                }
                 g.idle(dt);
-                if is_key_pressed(KeyCode::Space) {
+                over_t += dt;
+                // à l'écran de fin, ESPACE n'est accepté qu'après 1 s : un saut au moment de mourir ne relance pas
+                if is_key_pressed(KeyCode::Space) && (state == State::Title || over_t > 1.0) {
                     g = Game::new(seed());
                     state = State::Play;
                 }
@@ -169,7 +185,7 @@ async fn main() {
         match state {
             State::Title => hud::title(),
             State::Pause => hud::pause(),
-            State::Over => hud::over(&g, best, new_record),
+            State::Over => hud::over(&g, best, new_record, over_t > 1.0),
             State::Play => {}
         }
 
@@ -177,7 +193,9 @@ async fn main() {
             frames += 1;
             if frames == shot_at {
                 let n = (frames - 30).max(1) as f32;
-                println!("{frames} images : {:.2} ms en moyenne, {:.1} ms au pire", 1000.0 * frame_sum / n, 1000.0 * frame_max);
+                let (avg, worst) = (1000.0 * frame_sum / n, 1000.0 * frame_max);
+                let sons = if sounds.is_some() { "chargés" } else { "indisponibles" };
+                println!("{frames} images : {avg:.2} ms en moyenne, {worst:.1} ms au pire ; sons {sons}");
                 let suffix = if no_bloom { "-nobloom" } else { "" };
                 let mut img = get_screen_data();
                 for px in img.get_image_data_mut() {
