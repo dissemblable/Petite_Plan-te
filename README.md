@@ -26,6 +26,7 @@ Le mode `--release` est recommandé : en mode debug, le jeu est nettement plus l
 | Pause | `P` ou `Échap` |
 | Couper ou remettre la lueur | `G` |
 | Quitter | `Échap` depuis la pause, l'écran titre ou l'écran de fin |
+| Départ rapide (vague 3), une fois la vague 5 atteinte | `Entrée` sur l'écran titre ou l'écran de fin |
 
 `Espace` lance aussi une partie depuis l'écran titre et la relance depuis l'écran de fin, après 1 s : un saut au moment de perdre ne relance pas la partie. Les touches sont lues par leur position physique : sur AZERTY, les touches `W` `A` `D` d'un clavier QWERTY sont `Z` `Q` `D`.
 
@@ -41,10 +42,12 @@ Le mode `--release` est recommandé : en mode debug, le jeu est nettement plus l
 | 4 | Salves | Toutes les 10 à 16 s, six météorites tombent presque ensemble (en 0,125 s) en anneau autour du joueur. On peut sortir de l'anneau tout de suite, ou rester au centre : un seul saut, au moment où les six ondes s'y rejoignent, les franchit toutes. |
 | 5 | Ordre | Les cristaux ont trois couleurs (6 sur la planète, 2 de chaque) et se ramassent dans l'ordre : cyan, rose, vert, puis on recommence. Un cristal de la mauvaise couleur retire une case du quota et casse le combo, même pendant un dash. On ne ramasse qu'au sol : un saut passe par-dessus un mauvais cristal. Le cristal doré est un joker. L'aura du joueur, le panneau ORDRE et les faisceaux (vifs pour la couleur attendue, pâles pour les autres) montrent la couleur attendue. Rien d'autre ne durcit : toujours un seul drone. |
 | 6 et plus | Chaos | Tout à la fois, avec un deuxième drone, puis d'autres. |
+| 7 et plus | Modificateurs | Chaque vague, sauf celles de boss, tire au hasard un modificateur, annoncé par la bannière et jamais le même deux fois de suite. **Dalles fragiles** : la traînée du joueur brûle pendant 3 s (sauf sous ses pieds), il ne faut pas repasser dessus. **Gravité faible** : sauts presque deux fois plus hauts et plus longs. **Éclipse** : la face cachée du soleil s'éteint, seuls les marquages au sol restent visibles. **Cristaux fuyants** : les cristaux à moins de 6 unités s'éloignent du joueur, moins vite que lui. |
+| 10, 15, 20… | Boss | Un drone géant, plus lent que les autres, qu'on ne peut pas écraser : on rebondit dessus. Chaque météorite qui le touche l'étourdit 1 s ; la troisième le détruit et gagne la vague. Pas de modificateur pendant une vague de boss. |
 
 Au fil des vagues, les météorites tombent plus souvent (intervalle `max(0,7 ; 2,2 − 0,2 × vague)` secondes) et il y a plus de drones : 1 des vagues 3 à 5, 2 à la vague 6, 3 aux vagues 7 et 8, 4 à partir de la vague 9. Dès la vague 2, une part des météorites vise l'endroit où le joueur sera à l'impact s'il continue tout droit : 15 % à la vague 2, puis 15 % de plus par vague, jusqu'à 50 % à partir de la vague 5.
 
-**Score et combo.** Un cristal vaut 10 points, un cristal doré 50 (et compte pour 3 dans le quota), un drone détruit 30, qu'il soit écrasé ou tué par une météorite. Ramasser un cristal ou détruire un drone dans les 3 s qui suivent le précédent allonge la chaîne. Le multiplicateur gagne un palier tous les 4 maillons : ×1, ×2 à 4 maillons, et ainsi de suite jusqu'à ×5 à 16 maillons. Un coup ou un cristal de la mauvaise couleur remet la chaîne à zéro. Les cristaux disparaissent au bout de 11 s ; le doré disparaît avec l'impact de sa météorite.
+**Score et combo.** Un cristal vaut 10 points, un cristal doré 50 (et compte pour 3 dans le quota), un drone détruit 30, qu'il soit écrasé ou tué par une météorite, le boss 100 par météorite reçue et 300 à la dernière. Ramasser un cristal ou détruire un drone dans les 3 s qui suivent le précédent allonge la chaîne. Le multiplicateur gagne un palier tous les 4 maillons : ×1, ×2 à 4 maillons, et ainsi de suite jusqu'à ×5 à 16 maillons. Un coup ou un cristal de la mauvaise couleur remet la chaîne à zéro. Les cristaux disparaissent au bout de 11 s ; le doré disparaît avec l'impact de sa météorite.
 
 **Vies et gestes.** On commence avec 3 vies. Un coup donne 1,5 s d'invulnérabilité. Le dash (0,2 s, rechargé en 1,4 s) rend invulnérable pendant qu'il dure ; les réacteurs de l'astronaute s'allument quand il est prêt. Un saut demandé juste avant l'atterrissage est mémorisé.
 
@@ -52,7 +55,7 @@ Au fil des vagues, les météorites tombent plus souvent (intervalle `max(0,7 ; 
 
 **Son.** Les sons sont générés par le code : ramassage (la note monte avec la chaîne), mauvais cristal, impact, coup reçu, dash, vague terminée, drone qui s'arme, et un double bip quand une onde arrive dans le dos.
 
-**Record.** Le meilleur score est enregistré dans `record.txt`, dans le dossier d'où on lance le jeu.
+**Record.** Le meilleur score et la plus haute vague atteinte sont enregistrés dans `record.txt` (« score vague »), dans le dossier d'où on lance le jeu. Un ancien fichier, avec le score seul, reste lisible. La vague 5 atteinte une fois débloque le départ rapide à la vague 3.
 
 ## Développement
 

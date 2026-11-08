@@ -29,12 +29,16 @@ fn keyboard() -> Input {
 
 const RECORD_FILE: &str = "record.txt"; // à côté de l'endroit d'où on lance le jeu
 
-fn load_record(path: &str) -> u32 {
-    std::fs::read_to_string(path).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0)
+/// Record : « score vague », le meilleur score et la plus haute vague atteinte (elle débloque le départ rapide).
+/// Un ancien fichier, avec le score seul, reste lisible.
+fn load_record(path: &str) -> (u32, u32) {
+    let s = std::fs::read_to_string(path).unwrap_or_default();
+    let mut num = s.split_whitespace().map(|w| w.parse().unwrap_or(0));
+    (num.next().unwrap_or(0), num.next().unwrap_or(0))
 }
 
-fn save_record(path: &str, score: u32) {
-    let _ = std::fs::write(path, score.to_string()); // pas bloquant : dossier en lecture seule, etc.
+fn save_record(path: &str, score: u32, wave: u32) {
+    let _ = std::fs::write(path, format!("{score} {wave}")); // pas bloquant : dossier en lecture seule, etc.
 }
 
 #[derive(PartialEq)]
@@ -93,7 +97,7 @@ async fn main() {
         g.rest = 1e6;
         g.shocks.push(Shock { dir: d, r: 3.0, harmful: true });
         g.meteors.push(Meteor { dir: d, alt: 12.0, spin: 0.0 });
-        g.drones.push(Drone { n: d, f: d.any_orthonormal_vector(), arm: 0.0 });
+        g.drones.push(Drone { n: d, f: d.any_orthonormal_vector(), arm: 0.0, boss: false });
         g.crystals.push(Crystal { dir: d, life: 100.0, gold: true, kind: 0 });
     }
     match state {
@@ -106,7 +110,7 @@ async fn main() {
     }
 
     let mut sounds = sound::Sounds::load().await; // chargés aussi par l'outil de capture, qui ne les joue pas
-    let mut best = load_record(RECORD_FILE);
+    let (mut best, mut best_wave) = load_record(RECORD_FILE);
     let (mut new_record, mut frames, mut over_t) = (false, 0, 0.0f32);
     let (mut frame_sum, mut frame_max) = (0.0f32, 0.0f32); // durée des images, pour l'outil de capture
 
@@ -137,9 +141,9 @@ async fn main() {
                     g.clear_hazards();
                     g.crystals.clear(); // écran de fin : seulement la planète et l'astronaute
                     new_record = g.score > best;
-                    if new_record {
-                        best = g.score;
-                        save_record(RECORD_FILE, best);
+                    if new_record || g.wave > best_wave {
+                        (best, best_wave) = (best.max(g.score), best_wave.max(g.wave));
+                        save_record(RECORD_FILE, best, best_wave);
                     }
                     over_t = 0.0;
                     state = State::Over;
@@ -159,9 +163,14 @@ async fn main() {
                 }
                 g.idle(dt);
                 over_t += dt;
-                // à l'écran de fin, ESPACE n'est accepté qu'après 1 s : un saut au moment de mourir ne relance pas
-                if is_key_pressed(KeyCode::Space) && (state == State::Title || over_t > 1.0) {
+                // à l'écran de fin, ESPACE n'est accepté qu'après 1 s : un saut au moment de mourir ne relance pas.
+                // ENTRÉE : départ rapide, une fois la vague QUICK_UNLOCK atteinte.
+                let quick = best_wave >= QUICK_UNLOCK && is_key_pressed(KeyCode::Enter);
+                if (is_key_pressed(KeyCode::Space) || quick) && (state == State::Title || over_t > 1.0) {
                     g = Game::new(seed());
+                    if quick {
+                        g.start_wave(QUICK_START);
+                    }
                     state = State::Play;
                 }
             }
@@ -183,9 +192,9 @@ async fn main() {
             hud::popups(&g, cam.matrix(), cam.position);
         }
         match state {
-            State::Title => hud::title(),
+            State::Title => hud::title(best_wave >= QUICK_UNLOCK),
             State::Pause => hud::pause(),
-            State::Over => hud::over(&g, best, new_record, over_t > 1.0),
+            State::Over => hud::over(&g, best, new_record, over_t > 1.0, best_wave >= QUICK_UNLOCK),
             State::Play => {}
         }
 
@@ -218,11 +227,13 @@ mod tests {
         let path = std::env::temp_dir().join("petite-planete-test-record.txt");
         let path = path.to_str().unwrap();
         let _ = std::fs::remove_file(path);
-        assert_eq!(load_record(path), 0); // pas de fichier : record à zéro
-        save_record(path, 1234);
-        assert_eq!(load_record(path), 1234);
+        assert_eq!(load_record(path), (0, 0)); // pas de fichier : record à zéro
+        save_record(path, 1234, 6);
+        assert_eq!(load_record(path), (1234, 6));
+        std::fs::write(path, "2530").unwrap(); // ancien format : le score seul
+        assert_eq!(load_record(path), (2530, 0));
         std::fs::write(path, "n'importe quoi").unwrap();
-        assert_eq!(load_record(path), 0);
+        assert_eq!(load_record(path), (0, 0));
         let _ = std::fs::remove_file(path);
     }
 }

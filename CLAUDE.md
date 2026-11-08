@@ -6,7 +6,7 @@ Jeu d'arcade 3D en Rust (macroquad 0.4 avec sa fonctionnalité `audio`, édition
 
 - Windows 11, PowerShell. `cargo` n'est pas dans le PATH du shell des outils : commencer chaque commande par `$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"`.
 - Langue : français pour l'interface du jeu, les commentaires, les messages de commit et les docs. Jules écrit en français.
-- Ne pas committer sans demande explicite. Ne jamais supprimer `record.txt` à la racine : c'est le record réel du joueur (ignoré par git).
+- Ne pas committer sans demande explicite. Ne jamais supprimer `record.txt` à la racine : c'est le record réel du joueur (« score vague », ignoré par git ; un ancien fichier avec le score seul doit rester lisible).
 - Fins de ligne : les fichiers du dépôt sont en LF. Un script Python lancé sous Windows réécrit un fichier en CRLF s'il l'ouvre en mode texte : l'ouvrir en binaire, ou passer par l'outil d'édition.
 
 ## Vérifier un changement
@@ -49,4 +49,5 @@ Jeu d'arcade 3D en Rust (macroquad 0.4 avec sa fonctionnalité `audio`, édition
 | Changer la lueur, les halos, les vignettes | `fx.rs` (réglages en tête : seuil, intensité, passes de flou) |
 | Changer l'interface ou les textes des écrans | `hud.rs` |
 | Changer la scène, la caméra, les marquages au sol | `draw.rs` (la position de la caméra est `Game::cam_goal` dans `game.rs`) |
+| Changer un modificateur de vague ou le boss | `game.rs` (`Twist`, `start_wave`, `step`, réglages en tête), textes dans `hud::wave_text`, rendu dans `planet.rs` (éclipse), `draw.rs` (traînée qui brûle) et `models.rs` (boss) |
 | Changer un son | `sound.rs` (synthèse, volumes) ; l'événement qui le déclenche est un `Sfx` de `game.rs` |

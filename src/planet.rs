@@ -105,6 +105,10 @@ impl Planet {
         let (sun, t) = (SUN.normalize(), theme(g.wave));
         let progress = (g.got as f32 / cfg(g.wave).quota as f32).min(1.0);
         let (panel_dark, frame_dark) = (Color::new(0.13, 0.08, 0.28, 1.0), Color::new(0.055, 0.04, 0.13, 1.0));
+        // éclipse : la face cachée du soleil s'éteint presque, dalles allumées comprises ; seuls les marquages
+        // (dessinés par-dessus) restent lisibles
+        let eclipse = g.twist == Some(Twist::Eclipse);
+        let night = |p: Vec3| if eclipse { (0.05 + 3.0 * p.dot(sun)).clamp(0.05, 1.0) } else { 1.0 };
         // trois couches par dalle : cadre sombre, panneau, et pour les dalles allumées un cœur lumineux
         let (mut frames, mut panels, mut cores) = (vec![], vec![], vec![]);
         let (mut frame_idx, mut panel_idx, mut core_idx) = (vec![], vec![], vec![]);
@@ -130,13 +134,13 @@ impl Planet {
                 let toward = |k: f32| (corner + (tile.center - corner) * k).normalize();
                 let (mid, core) = (toward(0.08), toward(0.45));
                 let frame = shade(frame_dark, day(corner) * dim);
-                frames.push(Vertex::new2(corner * R, Vec2::ZERO, mix(frame, CYAN, cool * 0.4)));
+                frames.push(Vertex::new2(corner * R, Vec2::ZERO, shade(mix(frame, CYAN, cool * 0.4), night(corner))));
                 let unlit = shade(panel_dark, day(mid) * (1.0 + tile.tint) * dim);
                 let panel = mix(unlit, shade(t, 0.42 * shimmer * (0.7 + 0.3 * day(mid))), lit);
-                panels.push(Vertex::new2(mid * (R + 0.03), Vec2::ZERO, tint(panel)));
+                panels.push(Vertex::new2(mid * (R + 0.03), Vec2::ZERO, shade(tint(panel), night(mid))));
                 if lit > 0.02 {
                     let glow = mix(shade(panel_dark, day(core)), shade(t, shimmer * (0.8 + 0.2 * day(core))), lit);
-                    cores.push(Vertex::new2(core * (R + 0.05), Vec2::ZERO, tint(glow)));
+                    cores.push(Vertex::new2(core * (R + 0.05), Vec2::ZERO, shade(tint(glow), night(core))));
                 }
             }
             for idx in [0, 1, 2, 0, 2, 3] {
@@ -154,7 +158,7 @@ impl Planet {
         }
         let seam = Color { a: 0.35 + 0.3 * progress, ..t };
         for &(a, b) in &self.seams {
-            draw_line_3d(a * (R + 0.04), b * (R + 0.04), seam);
+            draw_line_3d(a * (R + 0.04), b * (R + 0.04), shade(seam, night(a)));
         }
     }
 }

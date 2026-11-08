@@ -28,6 +28,15 @@ const SHOCK_SPEED: f32 = 10.0;
 const SALVO_RADIUS: f32 = 7.0; // rayon de l'anneau d'une salve, autour du joueur
 const FIRST_REST: f32 = 2.5; // pause avant la vague 1 : le temps de lire la bannière
 const REST: f32 = 3.5; // pause entre deux vagues (s)
+const GRAVITY: f32 = 22.0;
+const LOW_GRAVITY: f32 = 12.0; // modificateur « gravité faible » : sauts presque deux fois plus hauts et plus longs
+const FRAGILE_TIME: f32 = 3.0; // modificateur « dalles fragiles » : la traînée brûle pendant ce temps
+const FLEE_SPEED: f32 = 2.5; // modificateur « cristaux fuyants » (unités/s) : moins vite que la marche (6,5)
+const BOSS_SPEED: f32 = 3.0; // le boss suit le joueur de près : facile à attirer sous une météorite
+pub const BOSS_REACH: f32 = 1.6; // rayon de contact du boss (0,9 pour un drone)
+pub const BOSS_HP: u32 = 3; // météorites qu'il faut au boss : il suit le joueur de près, une seule suffirait vite
+pub const QUICK_UNLOCK: u32 = 5; // vague à atteindre une fois pour débloquer le départ rapide
+pub const QUICK_START: u32 = 3; // vague du départ rapide
 
 pub const CYAN: Color = Color::new(0.15, 0.95, 1.0, 1.0);
 pub const HOTPINK: Color = Color::new(1.0, 0.2, 0.7, 1.0);
@@ -48,6 +57,7 @@ pub struct Cfg {
     pub lead: f32,    // part des météorites qui visent devant le joueur
     pub kinds: usize, // couleurs de cristaux à ramasser dans l'ordre (1 : pas d'ordre)
     pub crystals: usize, // cristaux ordinaires présents en même temps
+    pub boss: bool,   // un drone géant, que seule une météorite détruit
 }
 
 pub fn cfg(w: u32) -> Cfg {
@@ -64,8 +74,20 @@ pub fn cfg(w: u32) -> Cfg {
         lead: (0.15 * (w as f32 - 1.0)).min(0.5),
         kinds: if w >= 5 { 3 } else { 1 },
         crystals: if w >= 5 { 6 } else { 3 },
+        boss: w >= 10 && w.is_multiple_of(5), // pas à la vague 5, qui introduit déjà l'ordre des couleurs
     }
 }
+
+/// Modificateur de vague, tiré au hasard à partir de la vague 7, sauf pendant une vague de boss.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Twist {
+    Fragile,    // la traînée du joueur brûle quelques secondes
+    LowGravity, // sauts plus hauts et plus longs
+    Eclipse,    // la face cachée du soleil s'éteint : seuls les marquages restent lisibles
+    Fleeing,    // les cristaux fuient le joueur
+}
+
+const TWISTS: [Twist; 4] = [Twist::Fragile, Twist::LowGravity, Twist::Eclipse, Twist::Fleeing];
 
 /// Pause sans danger au début de la vague `w`. La bannière de la vague s'affiche pendant ce temps.
 pub fn rest_time(w: u32) -> f32 {
@@ -133,6 +155,7 @@ pub struct Drone {
     pub n: Vec3,
     pub f: Vec3,
     pub arm: f32, // temps restant avant qu'il devienne actif
+    pub boss: bool,
 }
 
 pub struct Spark {
@@ -156,6 +179,7 @@ pub enum Cause {
     Meteor,
     Shock,
     Drone,
+    Trail, // sa propre traînée, sur des dalles fragiles
 }
 
 /// Événement sonore d'un pas de simulation. La simulation ne joue rien : `main` passe ces événements à `sound`.
@@ -183,7 +207,8 @@ pub struct Game {
     pub dash_t: f32,  // temps de dash restant
     pub dash_cd: f32, // recharge restante
     pub flip: f32,    // angle restant du demi-tour
-    pub trail: Vec<Vec3>,
+    pub trail: Vec<(Vec3, f32)>, // points de passage et instant du passage
+    pub twist: Option<Twist>,    // modificateur de la vague
     // monde
     pub crystals: Vec<Crystal>,
     pub meteors: Vec<Meteor>,
@@ -212,6 +237,7 @@ pub struct Game {
     pub next_meteor: f32,
     pub next_salvo: f32,
     pub drone_cd: f32,
+    pub boss_hp: u32, // météorites qui restent à faire tomber sur le boss
     pub t: f32,
     pub cam: Vec3,
     pub cam_up: Vec3,
@@ -246,6 +272,7 @@ impl Game {
             dash_cd: 0.0,
             flip: 0.0,
             trail: vec![],
+            twist: None,
             crystals: vec![],
             meteors: vec![],
             shocks: vec![],
@@ -272,6 +299,7 @@ impl Game {
             next_meteor: 0.0,
             next_salvo: 0.0,
             drone_cd: 0.0,
+            boss_hp: 0,
             t: 0.0,
             cam: Vec3::ZERO,
             cam_up: Vec3::Y,
@@ -296,8 +324,10 @@ impl Game {
         (1 + self.chain / 4).min(5)
     }
 
-    /// Démarre la vague `w` : pause sans danger, bannière (pendant la pause), minuteurs remis à zéro.
+    /// Démarre la vague `w` : pause sans danger, bannière (pendant la pause), minuteurs remis à zéro,
+    /// modificateur tiré au hasard (jamais le même deux fois de suite), boss.
     pub fn start_wave(&mut self, w: u32) {
+        let c = cfg(w);
         self.wave = w;
         self.got = 0;
         self.need = 0;
@@ -307,7 +337,26 @@ impl Game {
         self.next_meteor = 0.5;
         self.next_salvo = self.rng.range(10.0, 16.0);
         self.drone_cd = 1.0;
+        let prev = self.twist;
+        self.twist = None;
+        while w >= 7 && !c.boss && (self.twist.is_none() || self.twist == prev) {
+            self.twist = Some(TWISTS[(self.rng.range(0.0, 4.0) as usize).min(3)]);
+        }
+        if c.boss {
+            self.spawn_drone(true);
+            self.boss_hp = BOSS_HP;
+        }
         self.fill_crystals();
+    }
+
+    fn gravity(&self) -> f32 {
+        if self.twist == Some(Twist::LowGravity) { LOW_GRAVITY } else { GRAVITY }
+    }
+
+    /// Dalles fragiles : un point de la traînée brûle pendant FRAGILE_TIME après le passage du joueur, sauf les
+    /// derniers (sous ses pieds) et pendant la pause.
+    pub fn trail_hot(&self, i: usize) -> bool {
+        self.twist == Some(Twist::Fragile) && self.rest == 0.0 && i + 3 < self.trail.len() && self.t - self.trail[i].1 < FRAGILE_TIME
     }
 
     /// Garde `cfg().crystals` cristaux ordinaires, jamais dans une zone d'impact ni sous le joueur. Chaque
@@ -451,14 +500,17 @@ impl Game {
             }
         };
         let (steer, ahead) = goal.map_or((0.0, 0.0), |g| aim(self.n, self.f, g));
-        // mauvais cristal dans le couloir devant lui (plus large que le ramassage) : il tourne du côté opposé, et
-        // n'avance que si ce virage le fait passer assez loin, sinon il tourne sur place. Fuir une météorite passe avant.
-        let blocking = |c: &Crystal| {
-            let to = (c.dir - self.n * c.dir.dot(self.n)) * R; // position dans le plan tangent
+        // mauvais cristal ou traînée brûlante dans le couloir devant lui (plus large que le ramassage) : il tourne du
+        // côté opposé, et n'avance que si ce virage le fait passer assez loin, sinon il tourne sur place. Fuir une
+        // météorite passe avant.
+        let blocking = |d: Vec3| {
+            let to = (d - self.n * d.dot(self.n)) * R; // position dans le plan tangent
             let (front, right) = (to.dot(self.f), to.dot(self.f.cross(self.n))); // right > 0 : à droite
             ((0.0..4.0).contains(&front) && right.abs() < PICKUP + 0.3).then_some((front, right))
         };
-        let in_way = if fleeing { None } else { self.crystals.iter().filter(|c| !wanted(c)).find_map(blocking) };
+        let hot = (0..self.trail.len()).filter(|&i| self.trail_hot(i)).map(|i| self.trail[i].0);
+        let obstacles = self.crystals.iter().filter(|c| !wanted(c)).map(|c| c.dir).chain(hot);
+        let in_way = if fleeing { None } else { obstacles.into_iter().find_map(blocking) };
         let r = WALK / TURN; // rayon du virage le plus serré
         let clear = |(front, right): (f32, f32)| (right.abs() + r).powi(2) + front * front > (r + PICKUP + 0.1).powi(2);
         // il n'avance pas s'il serait trop près d'une météorite au moment de sa chute en continuant tout droit, ni s'il
@@ -483,11 +535,11 @@ impl Game {
         let future = self.meteors.iter().filter(|m| cfg(self.wave).shocks && here(m.dir) > BLAST);
         let arrivals: Vec<f32> = rings.chain(future.map(|m| arrival(m.dir, BLAST, m.alt / FALL))).collect();
         let ring_jump = arrivals.iter().any(|t| (0.075..0.1).contains(t));
-        // trop tard pour sauter, et il sera bas quand l'onde arrive (h(t) = h + vh·t − 11·t², gravité de 22) : le dash
-        // le rend invulnérable pendant son passage
-        let low_at = |t: f32| self.h + self.vh * t - 11.0 * t * t < GROUND;
+        // trop tard pour sauter, et il sera bas quand l'onde arrive (h(t) = h + vh·t − g·t²/2) : le dash le rend
+        // invulnérable pendant son passage
+        let low_at = |t: f32| self.h + self.vh * t - 0.5 * self.gravity() * t * t < GROUND;
         let ring_dash = arrivals.iter().any(|&t| (0.0..0.075).contains(&t) && low_at(t));
-        let drone_close = self.drones.iter().any(|d| d.arm <= 0.0 && here(d.n) < 2.2);
+        let drone_close = self.drones.iter().any(|d| d.arm <= 0.0 && here(d.n) < if d.boss { BOSS_REACH + 1.3 } else { 2.2 });
         Input {
             // n'avance que face au but, sinon il tourne en orbite
             fwd: !wait && in_way.map_or(goal.is_some() && (fleeing || ahead > 0.3), clear),
@@ -522,11 +574,12 @@ impl Game {
         }
     }
 
-    fn spawn_drone(&mut self) {
+    fn spawn_drone(&mut self, boss: bool) {
         loop {
             let n = self.rng.dir();
             if (12.0..22.0).contains(&arc(n, self.n)) {
-                self.drones.push(Drone { n, f: n.any_orthonormal_vector(), arm: 1.2 });
+                let arm = if boss { self.rest + 1.2 } else { 1.2 }; // le boss, visible dès la bannière, attend la fin de la pause
+                self.drones.push(Drone { n, f: n.any_orthonormal_vector(), arm, boss });
                 self.drone_cd = 4.0;
                 self.sfx.push(Sfx::Drone);
                 return;
@@ -553,22 +606,40 @@ impl Game {
         for d in lost {
             self.burst(d * (R + 1.0), GRAY, 6);
         }
-        let mut crushed = vec![];
-        self.drones.retain(|d| {
-            let hit = arc(d.n, dir) < BLAST;
-            if hit {
-                crushed.push(d.n);
+        let (mut crushed, mut stunned, boss_hp) = (vec![], None, self.boss_hp);
+        self.drones.retain_mut(|d| {
+            if arc(d.n, dir) >= BLAST {
+                return true;
             }
-            !hit
+            if d.boss && boss_hp > 1 {
+                d.arm = 1.0; // le boss touché est sonné une seconde (immobile, inoffensif, il clignote)
+                stunned = Some(d.n);
+                return true;
+            }
+            crushed.push((d.n, d.boss));
+            false
         });
-        for p in crushed {
-            // attirer un drone sous une météorite vaut autant que l'écraser, maillon de combo compris
+        if let Some(p) = stunned {
+            self.boss_hp -= 1;
+            let pts = 100 * self.chain_up();
+            self.score += pts;
+            self.burst(p * (R + 1.5), AMBER, 30);
+            self.pop(p * (R + 3.0), format!("BOSS {}/{BOSS_HP} +{pts}", BOSS_HP - self.boss_hp), AMBER);
+        }
+        for (p, boss) in crushed {
+            // attirer un drone sous une météorite vaut autant que l'écraser, maillon de combo compris ; le boss, lui,
+            // ne meurt que comme ça (à la dernière météorite), et sa mort gagne la vague
             self.kills += 1;
             self.drone_cd = 4.0;
-            let pts = 30 * self.chain_up();
+            let pts = if boss { 300 } else { 30 } * self.chain_up();
             self.score += pts;
-            self.burst(p * (R + 0.6), DRONE, 16);
-            self.pop(p * (R + 1.5), format!("+{pts}"), DRONE);
+            self.burst(p * (R + 0.6), DRONE, if boss { 60 } else { 16 });
+            if boss {
+                self.got = self.got.max(cfg(self.wave).quota);
+                self.pop(p * (R + 3.0), format!("BOSS DÉTRUIT +{pts}"), AMBER);
+            } else {
+                self.pop(p * (R + 1.5), format!("+{pts}"), DRONE);
+            }
         }
         if arc(dir, self.n) < BLAST && self.h < 0.8 && self.vulnerable() {
             self.hit(Cause::Meteor);
@@ -623,23 +694,28 @@ impl Game {
             self.vh = 8.0;
             self.jump_buf = 0.0;
         }
-        self.vh -= 22.0 * dt;
+        self.vh -= self.gravity() * dt;
         self.h = (self.h + self.vh * dt).max(0.0);
         if self.h == 0.0 {
             self.vh = 0.0;
         }
 
-        if self.trail.last().is_none_or(|&p| arc(p, self.n) > 0.4) {
-            self.trail.push(self.n);
+        if self.trail.last().is_none_or(|&(p, _)| arc(p, self.n) > 0.4) {
+            self.trail.push((self.n, self.t));
             if self.trail.len() > 45 {
                 self.trail.remove(0);
             }
         }
 
-        // cristaux : ils expirent, on les ramasse au sol (un saut passe par-dessus), en chaîne, dans l'ordre des
-        // couleurs (le doré est un joker)
+        // cristaux : ils expirent (et fuient le joueur s'ils sont fuyants), on les ramasse au sol (un saut passe
+        // par-dessus), en chaîne, dans l'ordre des couleurs (le doré est un joker)
+        let n = self.n;
         for k in &mut self.crystals {
             k.life -= dt;
+            if self.twist == Some(Twist::Fleeing) && !k.gold && arc(k.dir, n) < 6.0 {
+                let away = (k.dir - n * k.dir.dot(n)).normalize_or_zero();
+                k.dir = (k.dir + away * FLEE_SPEED * dt / R).normalize();
+            }
         }
         self.crystals.retain(|k| k.life > 0.0);
         let mut i = 0;
@@ -688,8 +764,8 @@ impl Game {
                 }
             }
             self.drone_cd = (self.drone_cd - dt).max(0.0);
-            if self.drones.len() < c.drones && self.drone_cd == 0.0 {
-                self.spawn_drone();
+            if self.drones.iter().filter(|d| !d.boss).count() < c.drones && self.drone_cd == 0.0 {
+                self.spawn_drone(false);
             }
         }
 
@@ -697,9 +773,12 @@ impl Game {
         for s in &mut self.shocks {
             s.r += SHOCK_SPEED * dt;
         }
-        let n = self.n;
         if self.h < GROUND && self.vulnerable() && self.shocks.iter().any(|s| s.harmful && (arc(s.dir, n) - s.r).abs() < SHOCK_BAND) {
             self.hit(Cause::Shock);
+        }
+        // dalles fragiles : la traînée brûle (points à 0,4 l'un de l'autre : la ligne est continue)
+        if self.h < GROUND && self.vulnerable() && (0..self.trail.len()).any(|i| self.trail_hot(i) && arc(self.trail[i].0, n) < 0.35) {
+            self.hit(Cause::Trail);
         }
         self.shocks.retain(|s| s.r < if s.harmful { SHOCK_MAX } else { 2.0 * SHOCK_MAX });
 
@@ -715,26 +794,33 @@ impl Game {
             self.impact(dir, c.shocks);
         }
 
-        // drones : poursuite, écrasement (on retombe dessus), contact (coup)
+        // drones : poursuite, écrasement (on retombe dessus), contact (coup). Le boss ne s'écrase pas : on rebondit.
         let (pn, ph, pvh) = (self.n, self.h, self.vh);
         let speed = (2.6 + 0.3 * self.wave as f32).min(4.6);
-        let (mut stomped, mut touched) = (vec![], false);
+        let (mut stomped, mut touched, mut bounced) = (vec![], false, false);
         self.drones.retain_mut(|d| {
             if d.arm > 0.0 {
                 d.arm -= dt;
             } else {
                 let (steer, _) = aim(d.n, d.f, pn);
                 turn(d.n, &mut d.f, steer * 2.4 * dt);
-                walk(&mut d.n, &mut d.f, speed * dt);
+                walk(&mut d.n, &mut d.f, if d.boss { BOSS_SPEED } else { speed } * dt);
             }
-            let a = arc(d.n, pn);
-            if ph > 0.35 && pvh < 0.0 && a < 1.5 {
+            let (a, reach) = (arc(d.n, pn), if d.boss { BOSS_REACH } else { 0.9 });
+            if ph > 0.35 && pvh < 0.0 && a < reach + 0.6 {
+                if d.boss {
+                    bounced = true;
+                    return true;
+                }
                 stomped.push(d.n);
                 return false;
             }
-            touched |= d.arm <= 0.0 && a < 0.9 && ph < 1.0;
+            touched |= d.arm <= 0.0 && a < reach && ph < 1.0;
             true
         });
+        if bounced {
+            self.vh = 8.0;
+        }
         for p in stomped {
             self.stomp(p);
         }
@@ -838,7 +924,7 @@ mod tests {
         let mut g = calm();
         g.got = cfg(1).quota - 1;
         g.meteors.push(Meteor { dir: Vec3::X, alt: 20.0, spin: 0.0 });
-        g.drones.push(Drone { n: Vec3::X, f: Vec3::Y, arm: 0.0 });
+        g.drones.push(Drone { n: Vec3::X, f: Vec3::Y, arm: 0.0, boss: false });
         crystal_here(&mut g, false);
         g.step(DT, Input::default());
         assert_eq!((g.wave, g.got, g.lives), (2, 0, 4));
@@ -904,7 +990,7 @@ mod tests {
         let mut g = calm();
         let dir = Vec3::X; // à 14 unités du joueur : hors de portée du souffle
         g.crystals.push(Crystal { dir, life: 5.0, gold: false, kind: 0 });
-        g.drones.push(Drone { n: dir, f: Vec3::Y, arm: 0.0 });
+        g.drones.push(Drone { n: dir, f: Vec3::Y, arm: 0.0, boss: false });
         g.meteors.push(Meteor { dir, alt: 0.01, spin: 0.0 });
         g.step(0.1, Input::default());
         assert!(g.crystals.iter().all(|c| arc(c.dir, dir) >= BLAST));
@@ -980,7 +1066,7 @@ mod tests {
     #[test]
     fn landing_on_a_drone_kills_it_and_bounces() {
         let mut g = calm();
-        g.drones.push(Drone { n: g.n, f: g.f, arm: 0.0 });
+        g.drones.push(Drone { n: g.n, f: g.f, arm: 0.0, boss: false });
         g.h = 1.0;
         g.vh = -3.0;
         g.step(DT, Input::default());
@@ -992,11 +1078,11 @@ mod tests {
     #[test]
     fn touching_an_armed_drone_on_the_ground_hurts_but_not_before_it_arms() {
         let mut g = calm();
-        g.drones.push(Drone { n: g.n, f: g.f, arm: 1.0 });
+        g.drones.push(Drone { n: g.n, f: g.f, arm: 1.0, boss: false });
         g.step(DT, Input::default());
         assert_eq!(g.lives, 3);
         let mut g = calm();
-        g.drones.push(Drone { n: g.n, f: g.f, arm: 0.0 });
+        g.drones.push(Drone { n: g.n, f: g.f, arm: 0.0, boss: false });
         g.step(DT, Input::default());
         assert_eq!((g.lives, g.last_hit), (2, Some(Cause::Drone)));
     }
@@ -1006,7 +1092,7 @@ mod tests {
         let mut g = calm();
         let (mut n, mut f) = (Vec3::Y, -Vec3::Z);
         walk(&mut n, &mut f, 12.0);
-        g.drones.push(Drone { n, f: -f, arm: 0.0 }); // tourné dans le mauvais sens
+        g.drones.push(Drone { n, f: -f, arm: 0.0, boss: false }); // tourné dans le mauvais sens
         let before = arc(n, g.n);
         for _ in 0..180 {
             g.step(DT, Input::default());
@@ -1110,6 +1196,104 @@ mod tests {
         assert!(b.quota > a.quota && b.every < a.every && b.crystals > a.crystals);
         // la vague 5 introduit l'ordre des couleurs sans rien durcir d'autre : le deuxième drone attend la vague 6
         assert_eq!((cfg(4).drones, b.drones, cfg(6).drones), (1, 1, 2));
+    }
+
+    #[test]
+    fn twists_start_at_wave_7_never_repeat_and_skip_boss_waves() {
+        let mut g = calm_wave(6);
+        assert_eq!(g.twist, None);
+        let mut prev = None;
+        for _ in 0..20 {
+            g.start_wave(7);
+            assert!(g.twist.is_some() && g.twist != prev, "{:?} après {prev:?}", g.twist);
+            prev = g.twist;
+        }
+        g.start_wave(10);
+        assert_eq!(g.twist, None);
+        assert_eq!(g.drones.iter().filter(|d| d.boss).count(), 1);
+    }
+
+    #[test]
+    fn on_fragile_tiles_walking_back_over_the_trail_burns() {
+        for (twist, lives) in [(None, 3), (Some(Twist::Fragile), 2)] {
+            let mut g = calm();
+            (g.rest, g.next_meteor, g.twist) = (0.0, 1e6, twist); // la traînée ne brûle pas pendant la pause
+            let go = |g: &mut Game, frames, inp: fn() -> Input| (0..frames).for_each(|_| g.step(DT, inp()));
+            go(&mut g, 60, || Input { fwd: true, ..Default::default() });
+            go(&mut g, 1, || Input { back: true, ..Default::default() }); // demi-tour sur place (un appui)
+            go(&mut g, 19, Input::default);
+            go(&mut g, 60, || Input { fwd: true, ..Default::default() }); // et retour sur ses pas
+            assert_eq!(g.lives, lives, "{twist:?}");
+            assert_eq!(g.last_hit, twist.map(|_| Cause::Trail));
+        }
+        // immobile, il ne se brûle pas sur le bout de traînée qu'il a sous les pieds
+        let mut g = calm();
+        (g.rest, g.next_meteor, g.twist) = (0.0, 1e6, Some(Twist::Fragile));
+        for i in 0..120 {
+            g.step(DT, Input { fwd: i < 30, ..Default::default() });
+        }
+        assert_eq!(g.lives, 3);
+    }
+
+    #[test]
+    fn low_gravity_jumps_last_longer() {
+        let airtime = |twist| {
+            let mut g = calm();
+            g.twist = twist;
+            g.step(DT, Input { jump: true, ..Default::default() });
+            let mut frames = 1;
+            while g.h > 0.0 {
+                g.step(DT, Input::default());
+                frames += 1;
+            }
+            frames
+        };
+        let (low, normal) = (airtime(Some(Twist::LowGravity)), airtime(None));
+        assert!(low as f32 > 1.6 * normal as f32, "{low} images contre {normal}");
+    }
+
+    #[test]
+    fn fleeing_crystals_run_away_but_can_be_caught() {
+        let mut g = calm();
+        g.crystals.clear();
+        g.twist = Some(Twist::Fleeing);
+        let (mut d, mut f) = (g.n, g.f);
+        walk(&mut d, &mut f, 3.0);
+        g.crystals.push(Crystal { dir: d, life: 9.0, gold: false, kind: 0 });
+        g.step(DT, Input::default());
+        assert!(arc(g.crystals[0].dir, g.n) > 3.0, "il ne s'éloigne pas");
+        for _ in 0..60 {
+            g.step(DT, Input { fwd: true, ..Default::default() });
+        }
+        assert!(g.got >= 1, "on le rattrape : il fuit moins vite qu'on ne court");
+    }
+
+    #[test]
+    fn the_boss_cannot_be_stomped_and_only_a_meteor_kills_it_which_wins_the_wave() {
+        let mut g = calm_wave(10);
+        let boss = |g: &Game| g.drones.iter().position(|d| d.boss);
+        let i = boss(&g).expect("un boss à la vague 10");
+        assert!(g.drones[i].arm > rest_time(10) && g.boss_hp == BOSS_HP, "il attend la fin de la pause");
+        // on retombe dessus : on rebondit, il survit, et on n'est pas touché
+        g.drones[i] = Drone { n: g.n, f: g.f, arm: 0.0, boss: true };
+        (g.h, g.vh) = (1.0, -3.0);
+        g.step(DT, Input::default());
+        assert!(g.vh > 0.0 && boss(&g).is_some() && g.lives == 3);
+        // chaque météorite le sonne ; la troisième le détruit : gros bonus, et la vague est gagnée
+        let mut g = calm_wave(10);
+        g.drones.retain(|d| d.boss);
+        for hp in (0..BOSS_HP).rev() {
+            (g.drones[0].n, g.drones[0].arm) = (Vec3::X, 0.0);
+            g.meteors.push(Meteor { dir: Vec3::X, alt: 0.01, spin: 0.0 });
+            g.step(0.1, Input::default());
+            assert_eq!(boss(&g).is_some(), hp > 0, "points de vie restants {hp}");
+            if hp > 0 {
+                assert!(g.drones[0].arm > 0.0 && g.boss_hp == hp, "sonné");
+            }
+        }
+        assert!(g.score >= 300, "score {}", g.score);
+        g.step(DT, Input::default());
+        assert_eq!(g.wave, 11);
     }
 
     /// Vague 5 sans danger, sans cristal.

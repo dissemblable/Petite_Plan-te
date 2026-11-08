@@ -7,9 +7,19 @@ use macroquad::prelude::*;
 const PANEL: Color = Color::new(0.02, 0.03, 0.09, 0.62);
 const LABEL: Color = Color::new(0.55, 0.62, 0.8, 1.0);
 
-/// Nom de la vague et astuce sur son nouveau danger.
-pub fn wave_text(w: u32) -> (&'static str, &'static str) {
-    match w {
+/// Nom de la vague et astuce sur son nouveau danger (boss ou modificateur à partir de la vague 7).
+pub fn wave_text(g: &Game) -> (&'static str, &'static str) {
+    if cfg(g.wave).boss {
+        return ("BOSS", "Drone géant : attire-le 3 fois sous une météorite pour finir la vague !");
+    }
+    match g.twist {
+        Some(Twist::Fragile) => return ("DALLES FRAGILES", "Ta traînée brûle quelques secondes : ne repasse pas dessus !"),
+        Some(Twist::LowGravity) => return ("GRAVITÉ FAIBLE", "Sauts plus hauts et plus longs : vise bien pour écraser les drones."),
+        Some(Twist::Eclipse) => return ("ÉCLIPSE", "La face cachée s'éteint : seuls les marquages au sol restent visibles."),
+        Some(Twist::Fleeing) => return ("CRISTAUX FUYANTS", "Les cristaux s'enfuient quand tu approches : coupe-leur la route !"),
+        None => {}
+    }
+    match g.wave {
         1 => ("PLUIE", "Ramasse les cristaux et évite les zones d'impact."),
         2 => ("ONDES", "Les impacts lancent des ondes : saute par-dessus ! Le cristal doré est risqué."),
         3 => ("CHASSEURS", "Retombe sur un drone pour l'écraser, ou attire-le sous une météorite."),
@@ -25,6 +35,7 @@ fn cause_text(c: Cause) -> (&'static str, &'static str) {
         Cause::Meteor => ("Touché par une météorite", "Sors de la zone rouge avant l'impact, ou saute juste avant."),
         Cause::Shock => ("Touché par une onde", "Saute quand l'anneau arrive sur toi, même en le fuyant."),
         Cause::Drone => ("Touché par un drone", "Saute, puis retombe dessus pour l'écraser."),
+        Cause::Trail => ("Brûlé par ta traînée", "Dalles fragiles : ne repasse pas sur ta trace tant qu'elle est rouge."),
     }
 }
 
@@ -127,7 +138,7 @@ pub fn hud(g: &Game, best: u32) {
     draw_text("MAJ", 192.0, 133.0, 18.0, LABEL);
 
     // vague et quota : une case par cristal ; dessous, le bonus doublé « sans faute », qui s'éteint au premier coup
-    let (name, _) = wave_text(g.wave);
+    let (name, _) = wave_text(g);
     let pw = 400.0;
     let px = (w - pw) / 2.0;
     panel(px, 14.0, pw, 86.0, t);
@@ -150,6 +161,11 @@ pub fn hud(g: &Game, best: u32) {
         }
     }
 
+    // points de vie du boss, sous les panneaux du haut, une fois la bannière passée
+    if g.rest == 0.0 && g.drones.iter().any(|d| d.boss) {
+        glow_say(&format!("BOSS : encore {} météorite{}", g.boss_hp, if g.boss_hp > 1 { "s" } else { "" }), 186.0, 26.0, AMBER);
+    }
+
     // record et combo (multiplicateur, longueur de la chaîne, temps pour la prolonger)
     panel(w - 296.0, 14.0, 280.0, 54.0, AMBER);
     draw_text("RECORD", w - 282.0, 46.0, 20.0, LABEL);
@@ -165,7 +181,7 @@ pub fn hud(g: &Game, best: u32) {
 
     // bannière de vague, pendant la pause du début : glisse, s'attarde, s'efface ; un trait se déploie dessous
     if g.banner > 0.0 {
-        let (name, tip) = wave_text(g.wave);
+        let (name, tip) = wave_text(g);
         let shown = rest_time(g.wave) - g.banner; // temps depuis son apparition
         let into = ease(shown / 0.45);
         let a = into * (g.banner / 0.5).min(1.0);
@@ -199,7 +215,8 @@ fn prompt(s: &str, y: f32, col: Color) {
     glow_say(s, y, 36.0, Color { a, ..col });
 }
 
-pub fn title() {
+/// Écran titre. `quick` : le départ rapide est débloqué.
+pub fn title(quick: bool) {
     let w = screen_width();
     glow_say("PETITE PLANÈTE", 200.0, 96.0, Color { a: 0.88 + 0.12 * (get_time() as f32 * 2.0).sin(), ..CYAN });
     say("Ramasse les cristaux, évite les météorites, enchaîne les vagues", 262.0, 34.0, WHITE);
@@ -208,6 +225,9 @@ pub fn title() {
     say("Flèches ou ZQSD/WASD : avancer, tourner, faire demi-tour", 482.0, 28.0, LABEL);
     say("ESPACE : sauter     MAJ : dash     P ou ÉCHAP : pause", 514.0, 28.0, LABEL);
     say("G : lueur     ÉCHAP deux fois : quitter", 546.0, 28.0, LABEL);
+    if quick {
+        say(&format!("ENTRÉE : départ rapide à la vague {QUICK_START}"), 616.0, 28.0, AMBER);
+    }
     prompt("Appuie sur ESPACE", 670.0, HOTPINK);
 }
 
@@ -219,8 +239,8 @@ pub fn pause() {
 }
 
 /// Écran de fin : ce qui a touché le joueur en dernier et comment l'éviter, puis les chiffres de la partie.
-/// L'invite n'apparaît que lorsque ESPACE est accepté (`ready`).
-pub fn over(g: &Game, best: u32, new_record: bool, ready: bool) {
+/// L'invite n'apparaît que lorsque ESPACE est accepté (`ready`) ; `quick` : le départ rapide est débloqué.
+pub fn over(g: &Game, best: u32, new_record: bool, ready: bool, quick: bool) {
     let w = screen_width();
     panel((w - 720.0) / 2.0, 130.0, 720.0, 390.0, HOTPINK);
     glow_say("PERDU !", 220.0, 96.0, HOTPINK);
@@ -238,5 +258,8 @@ pub fn over(g: &Game, best: u32, new_record: bool, ready: bool) {
     }
     if ready {
         prompt("ESPACE pour rejouer", 640.0, CYAN);
+        if quick {
+            say(&format!("ENTRÉE : départ rapide à la vague {QUICK_START}"), 684.0, 26.0, AMBER);
+        }
     }
 }

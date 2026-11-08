@@ -151,27 +151,30 @@ pub fn meteor(g: &Game, m: &Meteor, sprites: &mut Vec<Sprite>) {
 
 pub fn drone(g: &Game, d: &Drone, sprites: &mut Vec<Sprite>) {
     let ready = d.arm <= 0.0;
-    let eye = if ready || (g.t * 12.0) as i32 % 2 == 0 { DRONE } else { WHITE }; // blanc qui clignote pendant l'armement
+    // le boss : même modèle, 2,2 fois plus grand, œil ambre
+    let (k, look) = if d.boss { (2.2, AMBER) } else { (1.0, DRONE) };
+    let eye = if ready || (g.t * 12.0) as i32 % 2 == 0 { look } else { WHITE }; // blanc qui clignote pendant l'armement
     let (n, f) = (d.n, d.f);
-    let p = n * (R + 0.8 + 0.1 * (g.t * 5.0).sin());
+    let p = n * (R + 0.8 * k + 0.1 * (g.t * 5.0).sin());
     let r = f.cross(n);
     let ax = [r, n, f];
     // anneau pointillé au sol : la zone de contact ; faisceau rouge pour le repérer au-delà de l'horizon
-    dashed_ring(n, 0.9, 0.09, Color { a: if ready { 0.7 } else { 0.25 }, ..DRONE }, g.t * 5.0);
+    let reach = if d.boss { BOSS_REACH } else { 0.9 };
+    dashed_ring(n, reach, 0.09, Color { a: if ready { 0.7 } else { 0.25 }, ..DRONE }, g.t * 5.0);
     draw_line_3d(n * R, n * (R + 12.0), Color { a: if ready { 0.5 } else { 0.2 }, ..DRONE });
-    draw_box(p, ax, vec3(0.42, 0.14, 0.42), GEAR, DRONE);
-    draw_box(p + n * 0.2, ax, vec3(0.25, 0.1, 0.25), GEAR, DRONE);
-    glow_box(p + f * 0.43 + n * 0.02, ax, vec3(0.15, 0.07, 0.05), eye);
+    draw_box(p, ax, vec3(0.42, 0.14, 0.42) * k, GEAR, DRONE);
+    draw_box(p + n * 0.2 * k, ax, vec3(0.25, 0.1, 0.25) * k, GEAR, DRONE);
+    glow_box(p + (f * 0.43 + n * 0.02) * k, ax, vec3(0.15, 0.07, 0.05) * k, eye);
     // quatre bras et leurs hélices
-    for (k, dir) in [r + f, r - f, -r + f, -r - f].iter().map(|v| v.normalize()).enumerate() {
+    for (j, dir) in [r + f, r - f, -r + f, -r - f].iter().map(|v| v.normalize()).enumerate() {
         let side = n.cross(dir);
-        draw_box(p + dir * 0.5, [dir, n, side], vec3(0.3, 0.03, 0.04), GEAR, DRONE);
-        let spin = Quat::from_axis_angle(n, g.t * 14.0 + k as f32);
-        draw_box(p + dir * 0.85 + n * 0.07, [spin * dir, n, spin * side], vec3(0.22, 0.012, 0.035), WHITE, DRONE);
+        draw_box(p + dir * 0.5 * k, [dir, n, side], vec3(0.3, 0.03, 0.04) * k, GEAR, DRONE);
+        let spin = Quat::from_axis_angle(n, g.t * 14.0 + j as f32);
+        draw_box(p + (dir * 0.85 + n * 0.07) * k, [spin * dir, n, spin * side], vec3(0.22, 0.012, 0.035) * k, WHITE, DRONE);
     }
     // antenne dont le bout clignote
-    draw_box(p + n * 0.42 - f * 0.1, ax, vec3(0.012, 0.14, 0.012), GEAR, DRONE);
+    draw_box(p + (n * 0.42 - f * 0.1) * k, ax, vec3(0.012, 0.14, 0.012) * k, GEAR, DRONE);
     let tip = if (g.t * 3.0 + p.x).sin() > 0.0 { DRONE } else { shade(DRONE, 0.3) };
-    glow_box(p + n * 0.58 - f * 0.1, ax, Vec3::splat(0.035), tip);
-    sprites.push(Sprite { pos: p + f * 0.45, size: 1.1, col: Color { a: 0.6, ..eye } });
+    glow_box(p + (n * 0.58 - f * 0.1) * k, ax, Vec3::splat(0.035 * k), tip);
+    sprites.push(Sprite { pos: p + f * 0.45 * k, size: 1.1 * k, col: Color { a: 0.6, ..eye } });
 }

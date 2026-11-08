@@ -180,12 +180,16 @@ impl Scene {
                 }
             });
         }
-        let pts: Vec<Vec3> = g.trail.iter().copied().chain([g.n]).collect();
+        let pts: Vec<Vec3> = g.trail.iter().map(|&(p, _)| p).chain([g.n]).collect();
         let (mut vertices, mut indices) = (vec![], vec![]);
         for (i, &p) in pts.iter().enumerate() {
             let dir = pts[(i + 1).min(pts.len() - 1)] - pts[i.saturating_sub(1)];
             let side = dir.cross(p).normalize_or_zero() * 0.1;
-            let col = Color { a: 0.6 * i as f32 / pts.len() as f32, ..CYAN };
+            let col = if i < g.trail.len() && g.trail_hot(i) {
+                Color { a: 0.9, ..DRONE } // dalles fragiles : la traînée brûle
+            } else {
+                Color { a: 0.6 * i as f32 / pts.len() as f32, ..CYAN }
+            };
             vertices.push(Vertex::new2(p * (R + 0.07) + side, Vec2::ZERO, col));
             vertices.push(Vertex::new2(p * (R + 0.07) - side, Vec2::ZERO, col));
             if i > 0 {

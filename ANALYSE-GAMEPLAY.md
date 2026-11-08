@@ -2,7 +2,7 @@
 
 Analyse du jeu tel qu'il est au commit `a6325da` (vague 5 « Ordre » comprise), le 7 novembre 2026.
 
-> **Suivi (7 novembre 2026).** Priorités 1 et 2 appliquées. Écarts avec ce document : ondes à 10 u/s et non 4 (avec une onde lente, une course en biais laisse l'onde rattraper le joueur sans qu'un saut suffise) ; ramassage seulement sous 0,5 de hauteur et non 1,0 (avec 1,0, un saut ne passe pas par-dessus un cristal pris en son centre) ; pause de la vague 1 portée à 2,5 s pour que la bannière reste lisible ; caméra plus plongeante, mais pas plus haute (plus haute, elle rapetisse la planète). Priorité 3 : à faire après avoir joué avec les priorités 1 et 2.
+> **Suivi (7 novembre 2026).** Priorités 1 et 2 appliquées. Écarts avec ce document : ondes à 10 u/s et non 4 (avec une onde lente, une course en biais laisse l'onde rattraper le joueur sans qu'un saut suffise) ; ramassage seulement sous 0,5 de hauteur et non 1,0 (avec 1,0, un saut ne passe pas par-dessus un cristal pris en son centre) ; pause de la vague 1 portée à 2,5 s pour que la bannière reste lisible ; caméra plus plongeante, mais pas plus haute (plus haute, elle rapetisse la planète). Priorité 3 appliquée le 8 novembre : boss aux vagues 10, 15… et non 5 (la vague 5 introduit déjà l'ordre), avec 3 points de vie (avec un seul, il suit le joueur de si près que le bot gagnait la vague de boss en 10 s), et pas de modificateur pendant une vague de boss.
 
 ## En bref
 
